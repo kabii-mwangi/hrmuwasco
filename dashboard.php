@@ -32,9 +32,11 @@ function hasPermission($requiredRole) {
     
     // Permission hierarchy
     $roles = [
-        'super_admin' => 3,
-        'hr_manager' => 2,
-        'dept_head' => 1,
+        'super_admin' => 5,
+        'hr_manager' =>4 ,
+        'managing_director'=>3,
+        'dept_head' => 2,
+        'section head'=>1,
         'employee' => 0
     ];
     
@@ -83,6 +85,94 @@ function getFlashMessage() {
     return false;
 }
 
+// Financial Year Functions (copied/adapted from admin.php for dashboard use)
+function getCurrentFinancialYear(?string $current_date = null, ?mysqli $mysqli = null): array {
+    if ($current_date === null) {
+        $current_date = date('Y-m-d');
+    }
+    if ($mysqli !== null) {
+        return getCurrentFinancialYearFromDatabase($current_date, $mysqli);
+    }
+    return calculateFinancialYearByDate($current_date);
+}
+
+function getCurrentFinancialYearFromDatabase(string $current_date, mysqli $mysqli): array {
+    $stmt = $mysqli->prepare("SELECT * FROM financial_years 
+                             WHERE ? BETWEEN start_date AND end_date 
+                             AND is_active = 1 
+                             ORDER BY start_date DESC 
+                             LIMIT 1");
+    if ($stmt) {
+        $stmt->bind_param("s", $current_date);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            return [
+                'id' => $row['id'],
+                'start_date' => $row['start_date'],
+                'end_date' => $row['end_date'],
+                'year_name' => $row['year_name'],
+                'from_database' => true
+            ];
+        }
+    }
+    $stmt = $mysqli->prepare("SELECT * FROM financial_years 
+                             WHERE is_active = 1 
+                             ORDER BY start_date DESC 
+                             LIMIT 1");
+    if ($stmt) {
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($row = $result->fetch_assoc()) {
+            return [
+                'id' => $row['id'],
+                'start_date' => $row['start_date'],
+                'end_date' => $row['end_date'],
+                'year_name' => $row['year_name'],
+                'from_database' => true,
+                'note' => 'Using most recent financial year from database'
+            ];
+        }
+    }
+    return calculateFinancialYearByDate($current_date);
+}
+
+function calculateFinancialYearByDate(string $current_date): array {
+    $current_year = (int)(new DateTime($current_date))->format('Y');
+    $current_month = (int)(new DateTime($current_date))->format('n');
+    if ($current_month >= 7) {
+        $start_year = $current_year;
+        $end_year = $current_year + 1;
+    } else {
+        $start_year = $current_year - 1;
+        $end_year = $current_year;
+    }
+    return [
+        'start_date' => $start_year . '-07-01',
+        'end_date' => $end_year . '-06-30',
+        'year_name' => $start_year . '/' . substr($end_year, 2),
+        'from_database' => false
+    ];
+}
+
+function getNextFinancialYear(?string $current_date = null, ?mysqli $mysqli = null): array {
+    $current_fy = getCurrentFinancialYear($current_date, $mysqli);
+    $current_end_year = (int)explode('-', $current_fy['end_date'])[0];
+    $next_start_year = $current_end_year;
+    $next_end_year = $next_start_year + 1;
+    return [
+        'start_date' => $next_start_year . '-07-01',
+        'end_date' => $next_end_year . '-06-30',
+        'year_name' => $next_start_year . '/' . substr($next_end_year, 2)
+    ];
+}
+
+function calculateTotalDays(string $start_date, string $end_date): int {
+    $start = new DateTime($start_date);
+    $end = new DateTime($end_date);
+    return $end->diff($start)->days + 1;
+}
+
 // Get dashboard statistics
 $conn = getConnection();
 
@@ -123,64 +213,82 @@ if ($result) {
     }
 }
 
+// Financial Year Notification Logic (for HR roles only)
+$fyNotification = null;
+if (hasPermission('hr_manager')) {
+    $today = date('Y-m-d');
+    $nextFy = getNextFinancialYear($today, $conn);
+    $nextStart = new DateTime($nextFy['start_date']);
+    $todayDate = new DateTime($today);
+    $daysUntilStart = $nextStart->diff($todayDate)->days;
+    
+    // Show notification if within 14 days before start (two weeks)
+    if ($daysUntilStart <= 14 && $daysUntilStart >= 0) {
+        $fyNotification = [
+            'days' => $daysUntilStart,
+            'year' => $nextFy['year_name'],
+            'start_date' => formatDate($nextFy['start_date'])
+        ];
+    }
+}
+
 // Close connection
 $conn->close();
 
 // Include the header (which handles theme and sets up the HTML document)
 include 'header.php';
+include 'nav_bar.php';
 ?>
 
 <title><?php echo $pageTitle; ?> - HR Management System</title>
 
+<style>
+/* Sliding Notification Banner Styles */
+.notification-banner {
+    position: fixed;
+    top: 100px; /* Adjust based on header/nav height */
+    right: -100%; /* Start off-screen to the right */
+    background: linear-gradient(45deg, #ff6b6b, #ee5a24);
+    color: white;
+    padding: 15px 20px;
+    border-radius: 0 10px 10px 0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    white-space: nowrap;
+    font-weight: bold;
+    font-size: 16px;
+    animation: slideIn 10s linear infinite;
+    cursor: pointer;
+    transition: opacity 0.3s ease;
+}
+
+.notification-banner:hover {
+    animation-play-state: paused;
+}
+
+@keyframes slideIn {
+    0% { transform: translateX(100%); }
+    10% { transform: translateX(0); }
+    90% { transform: translateX(0); }
+    100% { transform: translateX(-100%); }
+}
+
+/* Dismiss button for notification */
+.notification-dismiss {
+    margin-left: 15px;
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    color: white;
+    padding: 5px 10px;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 14px;
+}
+</style>
+
 <body>
     <div class="container">
         <!-- Sidebar -->
-        <div class="sidebar">
-            <div class="sidebar-brand">
-                <h1>HR System</h1>
-                <p>Management Portal</p>
-            </div>
-            <nav class="nav">
-                <ul>
-                    <li><a href="dashboard.php" class="active">
-                        <i class="fas fa-tachometer-alt"></i> Dashboard
-                    </a></li>
-                    <li><a href="employees.php">
-                        <i class="fas fa-users"></i> Employees
-                    </a></li>
-                    <?php if (hasPermission('hr_manager')): ?>
-                    <li><a href="departments.php">
-                        <i class="fas fa-building"></i> Departments
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('super_admin')): ?>
-                    <li><a href="admin.php?tab=users">
-                        <i class="fas fa-cog"></i> Admin
-                    </a></li>
-                    <?php elseif (hasPermission('hr_manager')): ?>
-                    <li><a href="admin.php?tab=financial">
-                        <i class="fas fa-cog"></i> Admin
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('hr_manager')): ?>
-                    <li><a href="reports.php">
-                        <i class="fas fa-chart-bar"></i> Reports
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('hr_manager') || hasPermission('super_admin') || hasPermission('dept_head') || hasPermission('officer')): ?>
-                    <li><a href="leave_management.php">
-                        <i class="fas fa-calendar-alt"></i> Leave Management
-                    </a></li>
-                    <?php endif; ?>
-                    <li><a href="strategic_plan.php?tab=strategic_plan">
-                        <i class="fas fa-star"></i> Performance Management
-                    </a></li>
-                    <li><a href="payroll_management.php">
-                        <i class="fas fa-money-check"></i> Payroll
-                    </a></li>
-                </ul>
-            </nav>
-        </div>
         
         <!-- Main Content Area -->
         <div class="main-content">
@@ -191,6 +299,14 @@ include 'header.php';
                     <div class="alert alert-<?php echo $flash['type']; ?>">
                         <?php echo htmlspecialchars($flash['message']); ?>
                     </div>
+                <?php endif; ?>
+                
+                <?php if ($fyNotification): ?>
+                <div class="notification-banner" onclick="this.style.display='none';">
+                    🚨 New Financial Year <?php echo htmlspecialchars($fyNotification['year']); ?> starts in <?php echo $fyNotification['days']; ?> days (<?php echo $fyNotification['start_date']; ?>). 
+                    Create it now in <a href="admin.php?tab=financial" style="color: #fff; text-decoration: underline;">Admin > Financial</a>!
+                    <button class="notification-dismiss" onclick="event.stopPropagation(); this.parentElement.style.display='none';">&times;</button>
+                </div>
                 <?php endif; ?>
                 
                 <div class="stats-grid">

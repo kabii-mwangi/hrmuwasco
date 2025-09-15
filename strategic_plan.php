@@ -25,29 +25,24 @@ $user = [
     'id' => $_SESSION['user_id']
 ];
 
-// Permission checking function
-function hasPermission($required_role) {
-    global $user;
-    $role_hierarchy = [
-        'managing_director' => 6,
+// Permission check function
+function hasPermission($requiredRole) {
+    $userRole = $_SESSION['user_role'] ?? 'guest';
+    
+    // Permission hierarchy
+    $roles = [
         'super_admin' => 5,
-        'hr_manager' => 4,
-        'dept_head' => 3,
-        'section_head' => 2,
-        'manager' => 1,
+        'hr_manager' =>4 ,
+        'managing_director'=>3,
+        'dept_head' => 2,
+        'section head'=>1,
         'employee' => 0
     ];
-
-    $user_level = $role_hierarchy[$user['role']] ?? 0;
-    $required_level = $role_hierarchy[$required_role] ?? 0;
-
-    return $user_level >= $required_level;
-}
-
-// Check if user has permission to access this page
-if (!hasPermission('hr_manager')) {
-    header("Location: dashboard.php");
-    exit();
+    
+    $userLevel = $roles[$userRole] ?? 0;
+    $requiredLevel = $roles[$requiredRole] ?? 0;
+    
+    return $userLevel >= $requiredLevel;
 }
 
 function formatDate($date) {
@@ -483,7 +478,8 @@ if (isset($_SESSION['flash_message'])) {
     unset($_SESSION['flash_type']);
 }
 
-require_once 'header.php';
+include 'header.php';
+include 'nav_bar.php';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -934,56 +930,8 @@ require_once 'header.php';
             }
         }
     </style>
-</head>
-<body>
+</head><body>
     <div class="container">
-        <!-- Sidebar -->
-        <div class="sidebar">
-            <div class="sidebar-brand">
-                <h1>HR System</h1>
-                <p>Management Portal</p>
-            </div>
-            <nav class="nav">
-                <ul>
-                    <li><a href="dashboard.php">
-                        <i class="fas fa-tachometer-alt"></i> Dashboard
-                    </a></li>
-                    <li><a href="employees.php">
-                        <i class="fas fa-users"></i> Employees
-                    </a></li>
-                    <?php if (hasPermission('hr_manager')): ?>
-                    <li><a href="departments.php">
-                        <i class="fas fa-building"></i> Departments
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('super_admin')): ?>
-                    <li><a href="admin.php?tab=users">
-                        <i class="fas fa-cog"></i> Admin
-                    </a></li>
-                    <?php elseif (hasPermission('hr_manager')): ?>
-                    <li><a href="admin.php?tab=financial">
-                        <i class="fas fa-cog"></i> Admin
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('hr_manager')): ?>
-                    <li><a href="reports.php">
-                        <i class="fas fa-chart-bar"></i> Reports
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('hr_manager') || hasPermission('super_admin') || hasPermission('dept_head') || hasPermission('officer')): ?>
-                    <li><a href="leave_management.php">
-                        <i class="fas fa-calendar-alt"></i> Leave Management
-                    </a></li>
-                    <?php endif; ?>
-                    <li><a href="strategic_plan.php?tab=goals">
-                        <i class="fas fa-star"></i> Performance Management
-                    </a></li>
-                    <li><a href="payroll_management.php">
-                        <i class="fas fa-money-check"></i> Payroll
-                    </a></li>
-                </ul>
-            </nav>
-        </div>
         
         <!-- Main Content Area -->
         <div class="main-content">
@@ -994,7 +942,7 @@ require_once 'header.php';
                     <?php if (in_array($user['role'], ['hr_manager', 'super_admin', 'manager', 'managing_director', 'section_head', 'dept_head'])): ?>
                         <a href="performance_appraisal.php" class="leave-tab">Performance Appraisal</a>
                     <?php endif; ?>
-                    <?php if (in_array($user['role'], ['hr_manager', 'super_admin', 'manager', 'managing_director'])): ?>
+                    <?php if (in_array($user['role'], ['hr_manager', 'super_admin', 'manager'])): ?>
                         <a href="appraisal_management.php" class="leave-tab">Appraisal Management</a>
                     <?php endif; ?>
                     <a href="completed_appraisals.php" class="leave-tab">Completed Appraisals</a>
@@ -1009,17 +957,15 @@ require_once 'header.php';
                 <div class="tabs">
                     <ul>
                         <li><a href="#" class="tab-link active" data-tab="goals">Goals</a></li>
-                        <?php if (hasPermission('hr_manager')): ?>
+                          <?php if (hasPermission('hr_manager')): ?>
                             <li><a href="#" class="tab-link" data-tab="strategic-plans">Strategic Plans</a></li>
-                        <?php endif; ?>
-                        <li><a href="#" class="tab-link" data-tab="objectives">Objectives</a></li>
-                        <?php if (hasPermission('hr_manager')): ?>
-                            <li><a href="#" class="tab-link" data-tab="strategies">Strategies</a></li>
+                          <li><a href="#" class="tab-link" data-tab="objectives">Objectives</a></li>
+                           <li><a href="#" class="tab-link" data-tab="strategies">Strategies</a></li>
                             <li><a href="#" class="tab-link" data-tab="activities">Activities</a></li>
                         <?php endif; ?>
                     </ul>
                 </div>
-                
+
                 <!-- Goals Tab -->
                 <div id="goals" class="tab-content active">
                     <div class="goals-header">
@@ -1029,6 +975,7 @@ require_once 'header.php';
                             <select id="strategic_plan_select">
                                 <option value="">-- Choose a plan --</option>
                                 <?php 
+                                // Get the latest strategic plan ID
                                 $latest_plan_id = null;
                                 if (!empty($strategic_plans)) {
                                     $latest_plan = reset($strategic_plans);
@@ -1102,24 +1049,21 @@ require_once 'header.php';
                                             <td><?php echo htmlspecialchars($activity['Y5'] ?? 'N/A'); ?></td>
                                             <td><?php echo htmlspecialchars($activity['comment'] ?? 'N/A'); ?></td>
                                             <td>
-                                                
-<button class="btn btn-sm btn-primary" 
+                                               <button class="btn btn-sm btn-primary edit-btn" 
         onclick="editActivity(
-            <?php echo $activity['id']; ?>, 
-            <?php echo $activity['strategy_id']; ?>,
-            <?php echo json_encode($activity['activity']); ?>, 
-            <?php echo json_encode($activity['kpi'] ?? ''); ?>, 
-            <?php echo json_encode($activity['target'] ?? ''); ?>, 
-            <?php echo json_encode($activity['Y1'] ?? ''); ?>, 
-            <?php echo json_encode($activity['Y2'] ?? ''); ?>, 
-            <?php echo json_encode($activity['Y3'] ?? ''); ?>, 
-            <?php echo json_encode($activity['Y4'] ?? ''); ?>, 
-            <?php echo json_encode($activity['Y5'] ?? ''); ?>, 
-            <?php echo json_encode($activity['comment'] ?? ''); ?>
+            <?php echo intval($activity['id']); ?>, 
+            '<?php echo htmlspecialchars(json_encode($activity['activity'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['kpi'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['target'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['Y1'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['Y2'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['Y3'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['Y4'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['Y5'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['comment'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>'
         )">
     <i class="fas fa-edit"></i> Edit
 </button>
-
                                             </td>
                                         </tr>
                                         <?php endforeach; ?>
@@ -1355,22 +1299,21 @@ require_once 'header.php';
                                     <td><?php echo htmlspecialchars($activity['target'] ?? 'N/A'); ?></td>
                                     <td><?php echo formatDate($activity['created_at']); ?></td>
                                     <td>
-                                        <button class="btn btn-sm btn-primary edit-btn" 
-                                                onclick="editActivity(
-                                                    <?php echo $activity['id']; ?>, 
-                                                    <?php echo $activity['strategy_id']; ?>,
-                                                    <?php echo json_encode($activity['activity']); ?>, 
-                                                    <?php echo json_encode($activity['kpi'] ?? ''); ?>, 
-                                                    <?php echo json_encode($activity['target'] ?? ''); ?>, 
-                                                    <?php echo json_encode($activity['Y1'] ?? ''); ?>, 
-                                                    <?php echo json_encode($activity['Y2'] ?? ''); ?>, 
-                                                    <?php echo json_encode($activity['Y3'] ?? ''); ?>, 
-                                                    <?php echo json_encode($activity['Y4'] ?? ''); ?>, 
-                                                    <?php echo json_encode($activity['Y5'] ?? ''); ?>, 
-                                                    <?php echo json_encode($activity['comment'] ?? ''); ?>
-                                                )">
-                                            <i class="fas fa-edit"></i> Edit
-                                        </button>
+                                       <button class="btn btn-sm btn-primary edit-btn" 
+        onclick="editActivity(
+            <?php echo intval($activity['id']); ?>, 
+            '<?php echo htmlspecialchars(json_encode($activity['activity'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['kpi'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['target'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['Y1'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['Y2'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['Y3'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['Y4'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['Y5'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>', 
+            '<?php echo htmlspecialchars(json_encode($activity['comment'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>'
+        )">
+    <i class="fas fa-edit"></i> Edit
+</button>
                                         <a href="strategic_plan.php?action=delete_activity&id=<?php echo $activity['id']; ?>" 
                                            class="btn btn-sm btn-danger" 
                                            onclick="return confirm('Are you sure you want to delete this activity?')">
@@ -1722,10 +1665,9 @@ require_once 'header.php';
             <form method="POST" action="strategic_plan.php">
                 <input type="hidden" name="update_activity" value="1">
                 <input type="hidden" id="edit_activity_id" name="id">
-                <input type="hidden" id="edit_strategy_id" name="strategy_id">
                 <div class="form-group">
                     <label class="form-label" for="edit_activity">Activity</label>
-                    <textarea class="form-control" id="edit_activity" name="activity" rows="3" required></textarea>
+                    <textarea class="form-control" id="edit_activity" name="activity" rows="3"></textarea>
                 </div>
                 <div class="form-group">
                     <label class="form-label" for="edit_kpi">KPI</label>
@@ -1856,13 +1798,33 @@ require_once 'header.php';
             planSelect.dispatchEvent(event);
         });
 
-        // Modal functions
+        // Modal functions with improved error handling
         function openModal(modalId) {
-            document.getElementById(modalId).style.display = 'flex';
+            const modal = document.getElementById(modalId);
+            if (modal) {
+                modal.style.display = 'flex';
+                // Add modal backdrop styling
+                modal.style.position = 'fixed';
+                modal.style.top = '0';
+                modal.style.left = '0';
+                modal.style.width = '100%';
+                modal.style.height = '100%';
+                modal.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+                modal.style.justifyContent = 'center';
+                modal.style.alignItems = 'center';
+                modal.style.zIndex = '1000';
+            } else {
+                console.error(`Modal ${modalId} not found`);
+            }
         }
 
         function closeModal(modalId) {
-            document.getElementById(modalId).style.display = 'none';
+            const modal = document.getElementById(modalId);
+            if (modal) {
+                modal.style.display = 'none';
+            } else {
+                console.error(`Modal ${modalId} not found`);
+            }
         }
 
         function editStrategicPlan(id, name, startDate, endDate, image) {
@@ -1899,21 +1861,40 @@ require_once 'header.php';
             openModal('editStrategyModal');
         }
 
-        function editActivity(id, strategyId, activity, kpi, target, y1, y2, y3, y4, y5, comment) {
-            console.log('Editing activity:', { id, strategyId, activity, kpi, target, y1, y2, y3, y4, y5, comment });
+        // Fixed editActivity function with proper error handling and field validation
+        function editActivity(id, activity, kpi, target, y1, y2, y3, y4, y5, comment) {
+            console.log('Editing activity with ID:', id); // Debug line
             
-            document.getElementById('edit_activity_id').value = id || '';
-            document.getElementById('edit_strategy_id').value = strategyId || '';
-            document.getElementById('edit_activity').value = activity || '';
-            document.getElementById('edit_kpi').value = kpi || '';
-            document.getElementById('edit_target').value = target || '';
-            document.getElementById('edit_y1').value = y1 || '';
-            document.getElementById('edit_y2').value = y2 || '';
-            document.getElementById('edit_y3').value = y3 || '';
-            document.getElementById('edit_y4').value = y4 || '';
-            document.getElementById('edit_y5').value = y5 || '';
-            document.getElementById('edit_comment').value = comment || '';
+            // Ensure the modal exists
+            const modal = document.getElementById('editActivityModal');
+            if (!modal) {
+                console.error('Edit Activity Modal not found');
+                return;
+            }
             
+            // Helper function to set field values with proper null/undefined handling
+            const setFieldValue = (fieldId, value) => {
+                const field = document.getElementById(fieldId);
+                if (field) {
+                    field.value = value || '';
+                } else {
+                    console.error(`Field ${fieldId} not found`);
+                }
+            };
+            
+            // Set all form field values
+            setFieldValue('edit_activity_id', id);
+            setFieldValue('edit_activity', activity);
+            setFieldValue('edit_kpi', kpi);
+            setFieldValue('edit_target', target);
+            setFieldValue('edit_y1', y1);
+            setFieldValue('edit_y2', y2);
+            setFieldValue('edit_y3', y3);
+            setFieldValue('edit_y4', y4);
+            setFieldValue('edit_y5', y5);
+            setFieldValue('edit_comment', comment);
+            
+            // Open the modal
             openModal('editActivityModal');
         }
 
@@ -1925,4 +1906,3 @@ require_once 'header.php';
         }
     </script>
 </body>
-</html>

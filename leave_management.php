@@ -28,23 +28,24 @@ $user = [
     'id' => $_SESSION['user_id']
 ];
 
-// Permission checking function
-function hasPermission($required_role) {
-    global $user;
-    $role_hierarchy = [
-        'managing_director' => 6,
+// Permission check function
+function hasPermission($requiredRole) {
+    $userRole = $_SESSION['user_role'] ?? 'guest';
+    
+    // Permission hierarchy
+    $roles = [
         'super_admin' => 5,
-        'hr_manager' => 4,
-        'dept_head' => 3,
-        'section_head' => 2,
-        'manager' => 1,
+        'hr_manager' =>4 ,
+        'managing_director'=>3,
+        'dept_head' => 2,
+        'section head'=>1,
         'employee' => 0
     ];
-
-    $user_level = $role_hierarchy[$user['role']] ?? 0;
-    $required_level = $role_hierarchy[$required_role] ?? 0;
-
-    return $user_level >= $required_level;
+    
+    $userLevel = $roles[$userRole] ?? 0;
+    $requiredLevel = $roles[$requiredRole] ?? 0;
+    
+    return $userLevel >= $requiredLevel;
 }
 
 function getFlashMessage() {
@@ -1359,6 +1360,9 @@ if ($userEmployee) {
 } catch (Exception $e) {
     $error = "Error fetching data: " . $e->getMessage();
 }
+include 'header.php';
+include 'nav_bar.php';
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1416,98 +1420,21 @@ if ($userEmployee) {
 </head>
 <body>
     <div class="container">
-        <!-- Sidebar -->
-        <div class="sidebar">
-            <div class="sidebar-brand">
-                <h1>HR System</h1>
-                <p>Management Portal</p>
-            </div>
-           <nav class="nav">
-                <ul>
-                    <li><a href="dashboard.php" class="active">
-                        <i class="fas fa-tachometer-alt"></i> Dashboard
-                    </a></li>
-                    <li><a href="employees.php">
-                        <i class="fas fa-users"></i> Employees
-                    </a></li>
-                    <?php if (hasPermission('hr_manager')): ?>
-                    <li><a href="departments.php">
-                        <i class="fas fa-building"></i> Departments
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('super_admin')): ?>
-                    <li><a href="admin.php?tab=users">
-                        <i class="fas fa-cog"></i> Admin
-                    </a></li>
-                    <?php elseif (hasPermission('hr_manager')): ?>
-                    <li><a href="admin.php?tab=financial">
-                        <i class="fas fa-cog"></i> Admin
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('hr_manager')): ?>
-                    <li><a href="reports.php">
-                        <i class="fas fa-chart-bar"></i> Reports
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('hr_manager') || hasPermission('super_admin') || hasPermission('dept_head') || hasPermission('officer')): ?>
-                    <li><a href="leave_management.php">
-                        <i class="fas fa-calendar-alt"></i> Leave Management
-                    </a></li>
-                    <?php endif; ?>
-                    <li><a href="strategic_plan.php">
-                        <i class="fas fa-star"></i> Performance Management
-                    </a></li>
-                    <li><a href="payroll_management.php">
-                        <i class="fas fa-money-check"></i> Payroll
-                    </a></li>
-                </ul>
-            </nav>
-        </div>
-
+     
         <!-- Main Content -->
         <div class="main-content">
             <!-- Header -->
-            <div class="header">
-                <h1>Enhanced Leave Management System</h1>
-                <div class="user-info">
-                    <span>Welcome, <?php echo htmlspecialchars($user['first_name'] . ' ' . $user['last_name']); ?></span>
-                    <span class="badge badge-info"><?php echo ucwords(str_replace('_', ' ', $user['role'])); ?></span>
-                    <a href="logout.php" class="btn btn-secondary btn-sm">Logout</a>
-                </div>
-            </div>
-
-            <div class="content">
-                <?php $flash = getFlashMessage(); if ($flash): ?>
-                    <div class="alert alert-<?php echo $flash['type']; ?>">
-                        <?php echo htmlspecialchars($flash['message']); ?>
-                    </div>
-                <?php endif; ?>
-
-                <?php if ($success): ?>
-                    <div class="alert alert-success">
-                        <?php echo $success; ?>
-                    </div>
-                <?php endif; ?>
-
-                <?php if ($error): ?>
-                    <div class="alert alert-danger">
-                        <?php echo htmlspecialchars($error); ?>
-                    </div>
-                <?php endif; ?>
-
-                <div class="leave-tabs">
-                    <a href="leave_management.php" class="leave-tab active">Apply Leave</a>
+     <div class="leave-tabs">
+                    <a href="leave_management.php" class="leave-tab">Apply Leave</a>
                     <?php if (in_array($user['role'], ['hr_manager', 'dept_head', 'section_head', 'manager', 'managing_director','super_admin'])): ?>
                     <a href="manage.php" class="leave-tab">Manage Leave</a>
                     <?php endif; ?>
-                    <?php if(in_array($user['role'], ['hr_manager', 'super_admin', 'manager','managing director'])): ?>
+                    <?php if(in_array($user['role'], ['hr_manager', 'super_admin', 'manager','managing_director'])): ?>
                     <a href="history.php" class="leave-tab">Leave History</a>
                     <a href="holidays.php" class="leave-tab">Holidays</a>
                     <?php endif; ?>
-                    <a href="profile.php" class="leave-tab">My Leave Profile</a>
-                </div>
-
-                
+                    <a href="profile.php" class="leave-tab active">My Leave Profile</a>
+                </div> 
     <!-- Enhanced Apply Leave Tab -->
     <div class="tab-content">
         <h3>Apply for Leave</h3>

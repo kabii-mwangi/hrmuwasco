@@ -181,6 +181,7 @@ try {
     $sections = [];
     $error = 'Error fetching data: ' . $e->getMessage();
 }
+include 'nav_bar.php';
 ?>
 
 <!DOCTYPE html>
@@ -193,53 +194,7 @@ try {
 </head>
 <body>
    <div class="container">
-        <!-- Sidebar -->
-        <div class="sidebar">
-            <div class="sidebar-brand">
-                <h1>HR System</h1>
-                <p>Management Portal</p>
-            </div>
-            <nav class="nav">
-                <ul>
-                    <li><a href="dashboard.php" class="active">
-                        <i class="fas fa-tachometer-alt"></i> Dashboard
-                    </a></li>
-                    <li><a href="employees.php">
-                        <i class="fas fa-users"></i> Employees
-                    </a></li>
-                    <?php if (hasPermission('hr_manager')): ?>
-                    <li><a href="departments.php">
-                        <i class="fas fa-building"></i> Departments
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('super_admin')): ?>
-                    <li><a href="admin.php?tab=users">
-                        <i class="fas fa-cog"></i> Admin
-                    </a></li>
-                    <?php elseif (hasPermission('hr_manager')): ?>
-                    <li><a href="admin.php?tab=financial">
-                        <i class="fas fa-cog"></i> Admin
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('hr_manager')): ?>
-                    <li><a href="reports.php">
-                        <i class="fas fa-chart-bar"></i> Reports
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('hr_manager') || hasPermission('super_admin') || hasPermission('dept_head') || hasPermission('officer')): ?>
-                    <li><a href="leave_management.php">
-                        <i class="fas fa-calendar-alt"></i> Leave Management
-                    </a></li>
-                    <?php endif; ?>
-                    <li><a href="employee_appraisal.php">
-                        <i class="fas fa-star"></i> Performance Appraisal
-                    </a></li>
-                    <li><a href="payroll_mnagements.php">
-                        <i class="fas fa-money-check"></i> Payroll
-                    </a></li>
-                </ul>
-            </nav>
-        </div>
+      
         
         <!-- Main Content Area -->
         <div class="main-content">

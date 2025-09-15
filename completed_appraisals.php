@@ -1,9 +1,8 @@
-```php
 <?php
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
-require_once 'header.php';
+
 require_once 'vendor/autoload.php';
 use Dompdf\Dompdf;
 
@@ -29,25 +28,22 @@ $user = [
     'employee_id' => $_SESSION['employee_id'] ?? null
 ];
 
-// Permission checking function
+// Permission check function
 function hasPermission($requiredRole) {
-    if (!isset($_SESSION['user_role'])) {
-        return false;
-    }
+    $userRole = $_SESSION['user_role'] ?? 'guest';
     
-    $roleHierarchy = [
+    // Permission hierarchy
+    $roles = [
         'super_admin' => 5,
         'hr_manager' => 4,
-        'managing_director' => 4,
-        'dept_head' => 3,
-        'section_head' => 2,
-        'manager' => 1,
-        'officer' => 0,
+        'managing_director' => 3,
+        'dept_head' => 2,
+        'section_head' => 1,
         'employee' => 0
     ];
     
-    $userLevel = $roleHierarchy[$_SESSION['user_role']] ?? 0;
-    $requiredLevel = $roleHierarchy[$requiredRole] ?? 0;
+    $userLevel = $roles[$userRole] ?? 0;
+    $requiredLevel = $roles[$requiredRole] ?? 0;
     
     return $userLevel >= $requiredLevel;
 }
@@ -378,7 +374,7 @@ if (isset($_POST['export']) && isset($_POST['appraisal_id'])) {
         LEFT JOIN sections s ON e.section_id = s.id
         JOIN appraisal_cycles ac ON ea.appraisal_cycle_id = ac.id
         JOIN employees e_appraiser ON ea.appraiser_id = e_appraiser.id
-        WHERE ea.id = ? AND ea.status = 'submitted'
+        WHERE ea.id = ?
     ";
     
     // Add role-based restrictions
@@ -478,6 +474,23 @@ $cyclesStmt = $conn->prepare("SELECT * FROM appraisal_cycles ORDER BY start_date
 $cyclesStmt->execute();
 $cycles = $cyclesStmt->get_result()->fetch_all(MYSQLI_ASSOC);
 
+// Get departments for filtering
+$departmentsStmt = $conn->prepare("SELECT DISTINCT d.id, d.name FROM departments d 
+                                   JOIN employees e ON e.department_id = d.id 
+                                   ORDER BY d.name");
+$departmentsStmt->execute();
+$departments = $departmentsStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+
+// Get sections for filtering
+$sectionsStmt = $conn->prepare("SELECT DISTINCT s.id, s.name FROM sections s 
+                                JOIN employees e ON e.section_id = s.id 
+                                ORDER BY s.name");
+$sectionsStmt->execute();
+$sections = $sectionsStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+
+// Define status options
+$statuses = ['draft', 'awaiting_employee', 'awaiting_submission', 'submitted'];
+
 // Get employees based on user role
 $employees = [];
 if (hasPermission('hr_manager')) {  // Covers hr_manager, managing_director, super_admin
@@ -502,6 +515,9 @@ if (hasPermission('hr_manager')) {  // Covers hr_manager, managing_director, sup
 // Filter parameters
 $selected_cycle = $_GET['cycle_id'] ?? '';
 $selected_employee = $_GET['employee_id'] ?? '';
+$selected_department = $_GET['department_id'] ?? '';
+$selected_section = $_GET['section_id'] ?? '';
+$selected_status = $_GET['status'] ?? '';
 
 // Build query based on user permissions and filters
 $appraisalsQuery = "
@@ -523,7 +539,7 @@ $appraisalsQuery = "
     LEFT JOIN sections s ON e.section_id = s.id
     JOIN appraisal_cycles ac ON ea.appraisal_cycle_id = ac.id
     JOIN employees e_appraiser ON ea.appraiser_id = e_appraiser.id
-    WHERE ea.status = 'submitted'
+    WHERE 1=1
 ";
 
 $queryParams = [];
@@ -536,8 +552,26 @@ if ($selected_cycle) {
     $paramTypes .= "i";
 }
 
+if ($selected_department) {
+    $appraisalsQuery .= " AND e.department_id = ?";
+    $queryParams[] = $selected_department;
+    $paramTypes .= "i";
+}
+
+if ($selected_section) {
+    $appraisalsQuery .= " AND e.section_id = ?";
+    $queryParams[] = $selected_section;
+    $paramTypes .= "i";
+}
+
+if ($selected_status) {
+    $appraisalsQuery .= " AND ea.status = ?";
+    $queryParams[] = $selected_status;
+    $paramTypes .= "s";
+}
+
 // Employee filter based on user role
-if (hasPermission('hr_manager')) {  // Covers hr_manager, managing_director, super_admin
+if (hasPermission('hr_manager') || hasPermission('managing_director')) {  // Covers hr_manager, managing_director, super_admin
     // Can see all appraisals
     if ($selected_employee) {
         $appraisalsQuery .= " AND ea.employee_id = ?";
@@ -610,6 +644,8 @@ if (!empty($appraisals)) {
 }
 
 $conn->close();
+include 'header.php';
+include 'nav_bar.php';
 ?>
 
 <!DOCTYPE html>
@@ -797,54 +833,7 @@ $conn->close();
 </head>
 <body>
  <div class="container">
-        <!-- Sidebar -->
-        <div class="sidebar">
-            <div class="sidebar-brand">
-                <h1>HR System</h1>
-                <p>Management Portal</p>
-            </div>
-            <nav class="nav">
-                <ul>
-                    <li><a href="dashboard.php" class="active">
-                        <i class="fas fa-tachometer-alt"></i> Dashboard
-                    </a></li>
-                    <li><a href="employees.php">
-                        <i class="fas fa-users"></i> Employees
-                    </a></li>
-                    <?php if (hasPermission('hr_manager')): ?>
-                    <li><a href="departments.php">
-                        <i class="fas fa-building"></i> Departments
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('super_admin')): ?>
-                    <li><a href="admin.php?tab=users">
-                        <i class="fas fa-cog"></i> Admin
-                    </a></li>
-                    <?php elseif (hasPermission('hr_manager')): ?>
-                    <li><a href="admin.php?tab=financial">
-                        <i class="fas fa-cog"></i> Admin
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('hr_manager')): ?>
-                    <li><a href="reports.php">
-                        <i class="fas fa-chart-bar"></i> Reports
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('hr_manager') || hasPermission('super_admin') || hasPermission('dept_head') || hasPermission('officer')): ?>
-                    <li><a href="leave_management.php">
-                        <i class="fas fa-calendar-alt"></i> Leave Management
-                    </a></li>
-                    <?php endif; ?>
-                    <li><a href="employee_appraisal.php">
-                        <i class="fas fa-star"></i> Performance Appraisal
-                    </a></li>
-                    <li><a href="payroll_management.php">
-                        <i class="fas fa-money-check"></i> Payroll
-                    </a></li>
-                </ul>
-            </nav>
-        </div>
-        
+       
         <!-- Main Content Area -->
         <div class="main-content">
             
@@ -864,11 +853,12 @@ $conn->close();
             <div class="content">
                 <!-- Navigation Tabs -->
                 <div class="leave-tabs">
+                    <a href="strategic_plan.php" class="leave-tab">Strategic Plan</a>
                     <a href="employee_appraisal.php" class="leave-tab ">Employee Appraisal</a>
                     <?php if(in_array($user['role'], ['hr_manager', 'super_admin', 'manager','managing_director', 'section_head', 'dept_head'])): ?>
                         <a href="performance_appraisal.php" class="leave-tab ">Performance Appraisal</a>
                     <?php endif; ?>
-                    <?php if(in_array($user['role'], ['hr_manager', 'super_admin','managing_director'])): ?>
+                    <?php if(in_array($user['role'], ['hr_manager', 'super_admin'])): ?>
                         <a href="appraisal_management.php" class="leave-tab">Appraisal Management</a>
                     <?php endif; ?>
                         <a href="completed_appraisals.php" class="leave-tab active">Completed Appraisals</a>                   
@@ -906,6 +896,42 @@ $conn->close();
                             </div>
                             
                             <div class="form-group">
+                                <label for="department_id">Department</label>
+                                <select name="department_id" id="department_id" class="form-control">
+                                    <option value="">All Departments</option>
+                                    <?php foreach ($departments as $department): ?>
+                                        <option value="<?php echo $department['id']; ?>" <?php echo ($selected_department == $department['id']) ? 'selected' : ''; ?>>
+                                            <?php echo htmlspecialchars($department['name']); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="section_id">Section</label>
+                                <select name="section_id" id="section_id" class="form-control">
+                                    <option value="">All Sections</option>
+                                    <?php foreach ($sections as $section): ?>
+                                        <option value="<?php echo $section['id']; ?>" <?php echo ($selected_section == $section['id']) ? 'selected' : ''; ?>>
+                                            <?php echo htmlspecialchars($section['name']); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="status">Status</label>
+                                <select name="status" id="status" class="form-control">
+                                    <option value="">All Statuses</option>
+                                    <?php foreach ($statuses as $status): ?>
+                                        <option value="<?php echo $status; ?>" <?php echo ($selected_status == $status) ? 'selected' : ''; ?>>
+                                            <?php echo htmlspecialchars(ucfirst(str_replace('_', ' ', $status))); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            
+                            <div class="form-group">
                                 <button type="submit" class="btn btn-primary">Filter</button>
                                 <a href="completed_appraisals.php" class="btn btn-secondary">Clear</a>
                             </div>
@@ -925,6 +951,7 @@ $conn->close();
                                     <th>Score</th>
                                     <th>Appraiser</th>
                                     <th>Submitted</th>
+                                    <th>Status</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
@@ -974,6 +1001,9 @@ $conn->close();
                                             <?php echo date('M d, Y', strtotime($appraisal['submitted_at'])); ?>
                                         </td>
                                         <td>
+                                            <?php echo htmlspecialchars(ucfirst(str_replace('_', ' ', $appraisal['status']))); ?>
+                                        </td>
+                                        <td>
                                             <div class="export-buttons">
                                                 <form method="POST" action="" style="display: inline;">
                                                     <input type="hidden" name="appraisal_id" value="<?php echo $appraisal['id']; ?>">
@@ -1001,13 +1031,13 @@ $conn->close();
                     </div>
                     
                     <div style="margin-top: 1rem; text-align: center; color: var(--text-secondary);">
-                        <small>Total: <?php echo count($appraisals); ?> completed appraisal(s)</small>
+                        <small>Total: <?php echo count($appraisals); ?> appraisal(s)</small>
                     </div>
                 <?php else: ?>
                     <div class="no-results">
-                        <h3>No Completed Appraisals Found</h3>
-                        <p>There are no completed appraisals matching your current filters.</p>
-                        <?php if ($selected_cycle || $selected_employee): ?>
+                        <h3>No Appraisals Found</h3>
+                        <p>There are no appraisals matching your current filters.</p>
+                        <?php if ($selected_cycle || $selected_employee || $selected_department || $selected_section || $selected_status): ?>
                             <a href="completed_appraisals.php" class="btn btn-primary">View All Appraisals</a>
                         <?php endif; ?>
                     </div>

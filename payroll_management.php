@@ -99,41 +99,110 @@ if (isset($_GET['action']) && $_GET['action'] == 'delete' && isset($_GET['id']) 
 
 // Handle edit form submission
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_payroll']) && hasPermission('hr_manager')) {
-    $payroll_id = $conn->real_escape_string($_POST['payroll_id']);
-    $employment_type = $conn->real_escape_string($_POST['employment_type']);
-    $status = $conn->real_escape_string($_POST['status']);
-    $salary = $conn->real_escape_string($_POST['salary']);
-    $bank_id = $conn->real_escape_string($_POST['bank_id']);
-    $bank_account = $conn->real_escape_string($_POST['bank_account']);
-    $job_group = $conn->real_escape_string($_POST['job_group']);
-    $sha_number = $conn->real_escape_string($_POST['sha_number'] ?? '');
-    $kra_pin = $conn->real_escape_string($_POST['kra_pin'] ?? '');
-    $nssf = $conn->real_escape_string($_POST['nssf'] ?? '');
-    $gross_pay = $conn->real_escape_string($_POST['gross_pay'] ?? '');
-    $net_pay = $conn->real_escape_string($_POST['net_pay'] ?? '');
-    
-    $updateQuery = "UPDATE payroll SET 
-                    employment_type = '$employment_type',
-                    status = '$status',
-                    salary = '$salary',
-                    bank_id = '$bank_id',
-                    bank_account = '$bank_account',
-                    job_group = '$job_group',
-                    SHA_number = NULLIF('$sha_number', ''),
-                    KRA_pin = NULLIF('$kra_pin', ''),
-                    NSSF = NULLIF('$nssf', ''),
-                    Gross_pay = NULLIF('$gross_pay', ''),
-                    net_pay = NULLIF('$net_pay', '')
-                    WHERE payroll_id = '$payroll_id'";
-    
-    if ($conn->query($updateQuery)) {
-        $_SESSION['flash_message'] = "Payroll record updated successfully";
+    $payroll_id = $_POST['payroll_id'] ?? '';
+    $emp_id = $_POST['emp_id'] ?? ''; // Added to identify employee
+    $employment_type = $_POST['employment_type'] ?? '';
+    $status = $_POST['status'] ?? '';
+    $salary = $_POST['salary'] ?? '';
+    $bank_id = $_POST['bank_id'] ?? '';
+    $bank_account = $_POST['bank_account'] ?? '';
+    $job_group = $_POST['job_group'] ?? '';
+    $sha_number = $_POST['sha_number'] ?? '';
+    $kra_pin = $_POST['kra_pin'] ?? '';
+    $nssf = $_POST['nssf'] ?? '';
+    $gross_pay = $_POST['gross_pay'] ?? '';
+    $net_pay = $_POST['net_pay'] ?? '';
+
+    // Validate inputs
+    $valid_employment_types = ['permanent', 'contract', 'temporary'];
+    $valid_statuses = ['active', 'pending', 'inactive'];
+    if (empty($payroll_id) || empty($emp_id) || empty($employment_type) || empty($status) || empty($salary) || empty($bank_id) || empty($bank_account) || empty($job_group)) {
+        $_SESSION['flash_message'] = "All required fields must be filled.";
+        $_SESSION['flash_type'] = "danger";
+        header("Location: payroll_management.php");
+        exit();
+    }
+    if (!in_array($employment_type, $valid_employment_types)) {
+        $_SESSION['flash_message'] = "Invalid employment type.";
+        $_SESSION['flash_type'] = "danger";
+        header("Location: payroll_management.php");
+        exit();
+    }
+    if (!in_array($status, $valid_statuses)) {
+        $_SESSION['flash_message'] = "Invalid status.";
+        $_SESSION['flash_type'] = "danger";
+        header("Location: payroll_management.php");
+        exit();
+    }
+
+    // Fetch scale_id from salary_bands
+    $sql = "SELECT scale_id FROM salary_bands WHERE scale_id = ?";
+    $stmt = $conn->prepare($sql);
+    $stmt->bind_param("s", $job_group);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    if ($result->num_rows == 0) {
+        $stmt->close();
+        $_SESSION['flash_message'] = "Invalid job group. Please select a valid job group.";
+        $_SESSION['flash_type'] = "danger";
+        header("Location: payroll_management.php");
+        exit();
+    }
+    $row = $result->fetch_assoc();
+    $scale_id = $row['scale_id'];
+    $stmt->close();
+
+    // Begin transaction
+    $conn->begin_transaction();
+    try {
+        // Update payroll table
+        // Update payroll table
+$sql = "UPDATE payroll SET 
+        employment_type = ?, 
+        status = ?, 
+        salary = ?, 
+        bank_id = ?, 
+        bank_account = ?, 
+        job_group = ?, 
+        SHA_number = NULLIF(?, ''), 
+        KRA_pin = NULLIF(?, ''), 
+        NSSF = NULLIF(?, ''), 
+        Gross_pay = NULLIF(?, ''), 
+        net_pay = NULLIF(?, '') 
+        WHERE payroll_id = ?";
+$stmt = $conn->prepare($sql);
+$stmt->bind_param("ssdsssssssds", $employment_type, $status, $salary, $bank_id, $bank_account, $job_group, $sha_number, $kra_pin, $nssf, $gross_pay, $net_pay, $payroll_id);
+if (!$stmt->execute()) {
+    throw new Exception("Error updating payroll table: " . $stmt->error);
+}
+$stmt->close();
+        // Update employees table
+        $sql = "UPDATE employees SET 
+                employment_type = ?, 
+                job_group = ?, 
+                scale_id = ?, 
+                updated_at = NOW() 
+                WHERE id = ?";
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param("ssss", $employment_type, $job_group, $scale_id, $emp_id);
+        if (!$stmt->execute()) {
+            throw new Exception("Error updating employees table: " . $stmt->error);
+        }
+        $stmt->close();
+
+        // Commit transaction
+        $conn->commit();
+        $_SESSION['flash_message'] = "Payroll and employee records updated successfully";
         $_SESSION['flash_type'] = "success";
         header("Location: payroll_management.php");
         exit();
-    } else {
-        $_SESSION['flash_message'] = "Error updating record: " . $conn->error;
+    } catch (Exception $e) {
+        // Rollback on error
+        $conn->rollback();
+        $_SESSION['flash_message'] = "Error updating records: " . $e->getMessage();
         $_SESSION['flash_type'] = "danger";
+        header("Location: payroll_management.php");
+        exit();
     }
 }
 
@@ -144,6 +213,16 @@ $banksResult = $conn->query($banksQuery);
 if ($banksResult && $banksResult->num_rows > 0) {
     while ($bank = $banksResult->fetch_assoc()) {
         $banks[$bank['bank_id']] = $bank['bank_name'];
+    }
+}
+
+// Fetch all job groups for the dropdown
+$job_groups = [];
+$jobGroupsQuery = "SELECT scale_id FROM salary_bands ORDER BY scale_id";
+$jobGroupsResult = $conn->query($jobGroupsQuery);
+if ($jobGroupsResult && $jobGroupsResult->num_rows > 0) {
+    while ($job_group = $jobGroupsResult->fetch_assoc()) {
+        $job_groups[$job_group['scale_id']] = $job_group['scale_id'];
     }
 }
 
@@ -601,6 +680,7 @@ $conn->close();
                                     <td>
                                         <button class="btn btn-sm btn-primary edit-btn" 
                                                 data-id="<?php echo $record['payroll_id']; ?>" 
+                                                data-emp-id="<?php echo $record['emp_id']; ?>" 
                                                 data-employment-type="<?php echo htmlspecialchars($record['employment_type'] ?? ''); ?>"
                                                 data-status="<?php echo htmlspecialchars($record['status'] ?? ''); ?>"
                                                 data-salary="<?php echo htmlspecialchars($record['salary'] ?? ''); ?>"
@@ -659,6 +739,7 @@ $conn->close();
                 <form method="POST" action="payroll_management.php">
                     <div class="modal-body">
                         <input type="hidden" name="payroll_id" id="edit_payroll_id">
+                        <input type="hidden" name="emp_id" id="edit_emp_id">
                         <input type="hidden" name="update_payroll" value="1">
                         
                         <div class="form-group">
@@ -685,6 +766,16 @@ $conn->close();
                         </div>
                         
                         <div class="form-group">
+                            <label class="form-label" for="edit_job_group">Job Group</label>
+                            <select class="form-control" id="edit_job_group" name="job_group" required>
+                                <option value="">Select Job Group</option>
+                                <?php foreach ($job_groups as $id => $name): ?>
+                                    <option value="<?php echo htmlspecialchars($id); ?>"><?php echo htmlspecialchars($name); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
                             <label class="form-label" for="edit_salary">Salary</label>
                             <input type="number" step="0.01" class="form-control" id="edit_salary" name="salary" required>
                         </div>
@@ -694,7 +785,7 @@ $conn->close();
                             <select class="form-control" id="edit_bank_id" name="bank_id" required>
                                 <option value="">Select Bank</option>
                                 <?php foreach ($banks as $id => $name): ?>
-                                    <option value="<?php echo $id; ?>"><?php echo htmlspecialchars($name); ?></option>
+                                    <option value="<?php echo htmlspecialchars($id); ?>"><?php echo htmlspecialchars($name); ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </div>
@@ -702,11 +793,6 @@ $conn->close();
                         <div class="form-group">
                             <label class="form-label" for="edit_bank_account">Bank Account</label>
                             <input type="text" class="form-control" id="edit_bank_account" name="bank_account" required>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label class="form-label" for="edit_job_group">Job Group</label>
-                            <input type="text" class="form-control" id="edit_job_group" name="job_group" required>
                         </div>
                         
                         <div class="form-group">
@@ -768,6 +854,7 @@ $conn->close();
         document.querySelectorAll('.edit-btn').forEach(button => {
             button.addEventListener('click', function() {
                 const payrollId = this.getAttribute('data-id');
+                const empId = this.getAttribute('data-emp-id');
                 const name = this.getAttribute('data-name');
                 const employmentType = this.getAttribute('data-employment-type');
                 const status = this.getAttribute('data-status');
@@ -782,6 +869,7 @@ $conn->close();
                 const netPay = this.getAttribute('data-net-pay');
                 
                 document.getElementById('edit_payroll_id').value = payrollId;
+                document.getElementById('edit_emp_id').value = empId;
                 document.getElementById('edit_name').value = name;
                 document.getElementById('edit_employment_type').value = employmentType;
                 document.getElementById('edit_status').value = status;

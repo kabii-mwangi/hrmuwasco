@@ -26,23 +26,25 @@ $user = [
     'id' => $_SESSION['user_id']
 ];
 
-// Permission checking function
-function hasPermission($required_role) {
-    global $user;
-    $role_hierarchy = [
-        'managing_director' => 6,
+
+// Permission check function
+function hasPermission($requiredRole) {
+    $userRole = $_SESSION['user_role'] ?? 'guest';
+    
+    // Permission hierarchy
+    $roles = [
         'super_admin' => 5,
-        'hr_manager' => 4,
-        'dept_head' => 3,
-        'section_head' => 2,
-        'manager' => 1,
+        'hr_manager' =>4 ,
+        'managing_director'=>3,
+        'dept_head' => 2,
+        'section head'=>1,
         'employee' => 0
     ];
-
-    $user_level = $role_hierarchy[$user['role']] ?? 0;
-    $required_level = $role_hierarchy[$required_role] ?? 0;
-
-    return $user_level >= $required_level;
+    
+    $userLevel = $roles[$userRole] ?? 0;
+    $requiredLevel = $roles[$requiredRole] ?? 0;
+    
+    return $userLevel >= $requiredLevel;
 }
 
 // Check if user has permission to access this page
@@ -89,6 +91,7 @@ try {
 } catch (Exception $e) {
     $error = "Error fetching data: " . $e->getMessage();
 }
+include 'nav_bar.php';
 ?>
 
 <!DOCTYPE html>
@@ -101,71 +104,22 @@ try {
 </head>
 <body>
    <div class="container">
-        <!-- Sidebar -->
-        <div class="sidebar">
-            <div class="sidebar-brand">
-                <h1>HR System</h1>
-                <p>Management Portal</p>
-            </div>
-            <nav class="nav">
-                <ul>
-                    <li><a href="dashboard.php" class="active">
-                        <i class="fas fa-tachometer-alt"></i> Dashboard
-                    </a></li>
-                    <li><a href="employees.php">
-                        <i class="fas fa-users"></i> Employees
-                    </a></li>
-                    <?php if (hasPermission('hr_manager')): ?>
-                    <li><a href="departments.php">
-                        <i class="fas fa-building"></i> Departments
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('super_admin')): ?>
-                    <li><a href="admin.php?tab=users">
-                        <i class="fas fa-cog"></i> Admin
-                    </a></li>
-                    <?php elseif (hasPermission('hr_manager')): ?>
-                    <li><a href="admin.php?tab=financial">
-                        <i class="fas fa-cog"></i> Admin
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('hr_manager')): ?>
-                    <li><a href="reports.php">
-                        <i class="fas fa-chart-bar"></i> Reports
-                    </a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('hr_manager') || hasPermission('super_admin') || hasPermission('dept_head') || hasPermission('officer')): ?>
-                    <li><a href="leave_management.php">
-                        <i class="fas fa-calendar-alt"></i> Leave Management
-                    </a></li>
-                    <?php endif; ?>
-                    <li><a href="employee_appraisal.php">
-                        <i class="fas fa-star"></i> Performance Appraisal
-                    </a></li>
-                    <li><a href="payroll_management.php">
-                        <i class="fas fa-money-check"></i> Payroll
-                    </a></li>
-                </ul>
-            </nav>
-        </div>
-        
+       
         <!-- Main Content Area -->
         <div class="main-content">
-            
-
-            <div class="content">
-                <div class="leave-tabs">
+            <div class="leave-tabs">
                     <a href="leave_management.php" class="leave-tab">Apply Leave</a>
                     <?php if (in_array($user['role'], ['hr_manager', 'dept_head', 'section_head', 'manager', 'managing_director','super_admin'])): ?>
                     <a href="manage.php" class="leave-tab">Manage Leave</a>
                     <?php endif; ?>
-                    <?php if(in_array($user['role'], ['hr_manager', 'super_admin', 'manager','managing director'])): ?>
-                    <a href="history.php" class="leave-tab active">Leave History</a>
-                    <a href="holidays.php" class="leave-tab">Holidays</a>
+                    <?php if(in_array($user['role'], ['hr_manager', 'super_admin', 'manager','managing_director'])): ?>
+                    <a href="history.php" class="leave-tab">Leave History</a>
                     <?php endif; ?>
-                    <a href="profile.php" class="leave-tab">My Leave Profile</a>
+                    <?php if(!hasPermission('hr_manager'))  :?>
+                        <a href="holidays.php" class="leave-tab">Holidays</a>
+                        <?php endif; ?>
+                    <a href="profile.php" class="leave-tab active">My Leave Profile</a>
                 </div>
-
                 <!-- Leave History Tab Content -->
                 <div class="tab-content">
                     <h3>Leave History</h3>

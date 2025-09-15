@@ -202,6 +202,7 @@ if ($result) {
 
 // Close connection
 $conn->close();
+include 'nav_bar.php';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -455,36 +456,7 @@ $conn->close();
 </head>
 <body>
     <div class="container">
-        <!-- Sidebar -->
-        <div class="sidebar">
-            <div class="sidebar-brand">
-                <h1>HR System</h1>
-                <p>Management Portal</p>
-            </div>
-            <nav class="nav">
-                <ul>
-                    <li><a href="dashboard.php">Dashboard</a></li>
-                    <li><a href="employees.php">Employees</a></li>
-                    <?php if (hasPermission('hr_manager')): ?>
-                    <li><a href="departments.php">Departments</a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('super_admin')): ?>
-                    <li><a href="admin.php?tab=users">Admin</a></li>
-                    <?php elseif (hasPermission('hr_manager')): ?>
-                    <li><a href="admin.php?tab=financial">Admin</a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('hr_manager')): ?>
-                    <li><a href="reports.php">Reports</a></li>
-                    <?php endif; ?>
-                    <?php if (hasPermission('hr_manager') || hasPermission('super_admin') || hasPermission('dept_head') || hasPermission('officer')): ?>
-                    <li><a href="leave_management.php">Leave Management</a></li>
-                    <?php endif; ?>
-                    <li><a href="employee_appraisal.php">Performance Appraisal</a></li>
-                    <li><a href="payroll_management.php" class="active">Payroll</a></li>
-                </ul>
-            </nav>
-        </div>
-
+       
         <!-- Main Content -->
         <div class="main-content">
             <div class="content">

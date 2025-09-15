@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Generation Time: Sep 05, 2025 at 03:03 PM
+-- Generation Time: Sep 08, 2025 at 04:05 PM
 -- Server version: 10.4.32-MariaDB
 -- PHP Version: 8.2.12
 
@@ -20,6 +20,36 @@ SET time_zone = "+00:00";
 --
 -- Database: `hrs`
 --
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `activities`
+--
+
+CREATE TABLE `activities` (
+  `id` int(11) NOT NULL,
+  `strategy_id` int(11) NOT NULL,
+  `activity` text NOT NULL,
+  `kpi` varchar(255) DEFAULT NULL,
+  `target` varchar(255) DEFAULT NULL,
+  `Y1` decimal(10,2) DEFAULT NULL,
+  `Y2` decimal(10,2) DEFAULT NULL,
+  `Y3` decimal(10,2) DEFAULT NULL,
+  `Y4` decimal(10,2) DEFAULT NULL,
+  `Y5` decimal(10,2) DEFAULT NULL,
+  `comment` text DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+--
+-- Dumping data for table `activities`
+--
+
+INSERT INTO `activities` (`id`, `strategy_id`, `activity`, `kpi`, `target`, `Y1`, `Y2`, `Y3`, `Y4`, `Y5`, `comment`, `created_at`, `updated_at`) VALUES
+(1, 3, 'Conduct customer \r\nsatisfaction survey \r\nImplementation of \r\ncustomer satisfaction \r\nsurveys \r\nrecommendations   ', 'Number  of  customer  surveys ', '85%', 69.00, 0.00, 0.00, 0.00, 0.00, '', '2025-09-08 12:11:24', '2025-09-08 12:11:24'),
+(2, 3, 'Implement Multi\r\nChannel Support (e.g., \r\nphone, chat, email, \r\nsocial media) ', 'Function  ing call  centre ', '1', 0.50, 0.00, 0.00, 0.00, 0.00, '', '2025-09-08 12:14:34', '2025-09-08 12:14:34');
 
 -- --------------------------------------------------------
 
@@ -535,7 +565,7 @@ INSERT INTO `employees` (`id`, `employee_id`, `first_name`, `last_name`, `gender
 (121, 'EMP10', 'Hezron', 'Njoroge', '', 3987654, 'hezronnjoro@gmail.com', '0', '0786542982', '1987-03-11', 'Mukurweini', 2, NULL, NULL, NULL, '2025-01-01', 'permanent', 'dept_head', 'uploads/profile_images/68ba953e7e13e.jpg', '2025-07-22 10:32:58', '2025-09-05 07:46:06', 'active', 'dept_head', '7'),
 (122, '150', 'will', 'smith', '', 123546, 'will@gmail.com', '0', '0786542982', '2025-07-01', 'Mukurweini', 2, 5, NULL, NULL, '2025-07-15', 'permanent', 'officer', 'uploads/profile_images/68baa43e17311.jpg', '2025-07-23 16:16:36', '2025-09-05 08:50:06', 'active', 'officer', '4'),
 (134, '161', 'hash', 'pappy', '', 126354, 'hash@gmail.com', '0', '0707070708', '2025-07-01', '1050', 2, 5, NULL, NULL, '2025-07-21', 'permanent', 'section_head', NULL, '2025-07-23 16:45:44', '2025-08-29 12:09:53', 'active', 'section_he', '5'),
-(135, 'EMP020', 'John', 'Doe', 'female', 123987, 'lucy@gmail.com', '0', '0707070708', '2025-07-01', 'Kiambu', NULL, 1, NULL, NULL, '2025-07-01', 'permanent', 'hr_manager', 'uploads/profile_images/68baa44bc4bb3.jpg', '2025-07-24 18:24:31', '2025-09-05 08:50:19', 'active', 'hr_manager', '8'),
+(135, 'EMP020', 'John', 'Doe', 'female', 123987, 'lucy@gmail.com', '0', '0707070708', '2025-07-01', 'Kiambu', NULL, 1, NULL, NULL, '2025-07-01', 'permanent', 'hr_manager', 'uploads/profile_images/68be84e16dc37.png', '2025-07-24 18:24:31', '2025-09-08 07:25:21', 'active', 'hr_manager', '8'),
 (136, 'EMP015', 'Mwangi', 'Mwangi', '', 33679875, 'martinmwangi14@gmail.com', '0', '073354566645', '1967-03-12', 'Kihoya', 2, 4, NULL, NULL, '2023-08-25', 'permanent', 'officer', NULL, '2025-07-25 05:03:20', '2025-08-29 12:09:53', 'active', 'officer', '4'),
 (143, 'EMP019', 'Dancan', 'karenju', '', 33890765, 'karenjuduncan70@gmail.com', 'Innovation', '0112554479', '1987-09-08', 'Kiambu', NULL, NULL, NULL, NULL, '2024-10-10', 'permanent', 'managing_director', NULL, '2025-07-29 10:09:46', '2025-08-29 12:09:53', 'active', 'managing_d', '10'),
 (145, 'EMP021', 'Peter', 'Maina', 'male', 30198987, 'petermaina19@gmail.com', 'PME', '0707454717', '1999-10-31', 'Muranga town', 2, 3, NULL, NULL, '2025-03-13', 'contract', 'officer', NULL, '2025-08-26 07:50:42', '2025-08-29 12:09:53', 'active', 'officer', '4'),
@@ -662,7 +692,8 @@ INSERT INTO `employee_appraisals` (`id`, `employee_id`, `appraiser_id`, `apprais
 (63, 146, 121, 4, NULL, NULL, '', '2025-09-04 10:06:15', NULL, 'draft', '2025-09-04 07:06:15', '2025-09-04 07:06:15'),
 (64, 146, 135, 3, NULL, NULL, '', '2025-09-05 09:43:22', NULL, 'draft', '2025-09-05 06:43:22', '2025-09-05 06:43:22'),
 (65, 121, 135, 6, NULL, NULL, '', '2025-09-05 09:43:53', NULL, 'draft', '2025-09-05 06:43:53', '2025-09-05 06:43:53'),
-(66, 146, 135, 5, NULL, NULL, '', '2025-09-05 09:54:10', NULL, 'draft', '2025-09-05 06:54:10', '2025-09-05 06:54:10');
+(66, 146, 135, 5, NULL, NULL, '', '2025-09-05 09:54:10', NULL, 'draft', '2025-09-05 06:54:10', '2025-09-05 06:54:10'),
+(67, 147, 135, 1, NULL, NULL, '', '2025-09-08 16:49:07', NULL, 'draft', '2025-09-08 13:49:07', '2025-09-08 13:49:07');
 
 -- --------------------------------------------------------
 
@@ -1808,7 +1839,9 @@ CREATE TABLE `objectives` (
 --
 
 INSERT INTO `objectives` (`id`, `strategic_plan_id`, `name`, `start_date`, `end_date`, `created_at`, `updated_at`) VALUES
-(1, 1, 'Customer satisfaction ', '2025-07-01', '2026-06-30', '2025-09-05 11:18:12', '2025-09-05 11:18:12');
+(1, 3, 'Customer satisfaction ', '2025-07-01', '2026-06-30', '2025-09-05 11:18:12', '2025-09-08 09:29:10'),
+(2, 2, 'improve  Communicati  on and  Transparency', '2025-06-01', '2025-12-31', '2025-09-08 11:18:01', '2025-09-08 11:18:01'),
+(3, 2, 'Review the  company’s corporate  communicati  ons policy', '2025-09-01', '2025-12-31', '2025-09-08 11:19:24', '2025-09-08 11:19:24');
 
 -- --------------------------------------------------------
 
@@ -2018,16 +2051,17 @@ CREATE TABLE `strategic_plan` (
   `end_date` date NOT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
-  `image_path` varchar(255) DEFAULT NULL
+  `image` varchar(255) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Dumping data for table `strategic_plan`
 --
 
-INSERT INTO `strategic_plan` (`id`, `name`, `start_date`, `end_date`, `created_at`, `updated_at`, `image_path`) VALUES
-(1, '2025-2030', '2025-01-01', '2030-03-11', '2025-09-05 11:16:47', '2025-09-05 11:17:03', NULL),
-(2, 'strategic plan 2025-2030', '2025-01-01', '2031-03-12', '2025-09-05 12:19:43', '2025-09-05 12:19:43', NULL);
+INSERT INTO `strategic_plan` (`id`, `name`, `start_date`, `end_date`, `created_at`, `updated_at`, `image`) VALUES
+(2, 'strategic plan 2025-2030', '2025-01-01', '2031-03-12', '2025-09-05 12:19:43', '2025-09-08 07:55:49', 'uploads/strategic_plan_images/2025/2.png'),
+(3, '2026-2031', '2026-01-01', '2031-12-31', '2025-09-08 08:15:44', '2025-09-08 08:22:16', 'Uploads/2026-2031/3.png'),
+(4, 'strategic plan 2030-2035', '2030-01-01', '2035-12-31', '2025-09-08 10:41:34', '2025-09-08 10:41:34', 'Uploads/2030-2035/4.jpg');
 
 -- --------------------------------------------------------
 
@@ -2042,6 +2076,15 @@ CREATE TABLE `strategies` (
   `name` varchar(255) NOT NULL,
   `start_date` date NOT NULL,
   `end_date` date NOT NULL,
+  `activity` text NOT NULL,
+  `kpi` text NOT NULL,
+  `target` text NOT NULL,
+  `Y1` int(11) NOT NULL,
+  `Y2` int(11) NOT NULL,
+  `Y3` int(11) NOT NULL,
+  `Y4` int(11) NOT NULL,
+  `Y5` int(11) NOT NULL,
+  `Comment` text NOT NULL,
   `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
@@ -2050,8 +2093,10 @@ CREATE TABLE `strategies` (
 -- Dumping data for table `strategies`
 --
 
-INSERT INTO `strategies` (`id`, `strategic_plan_id`, `objective_id`, `name`, `start_date`, `end_date`, `created_at`, `updated_at`) VALUES
-(1, 1, 1, 'To increase  customer  water  connections  from 25,000  to 30,000 by  the year 2030 ', '2025-01-01', '2030-12-31', '2025-09-05 12:45:09', '2025-09-05 12:45:09');
+INSERT INTO `strategies` (`id`, `strategic_plan_id`, `objective_id`, `name`, `start_date`, `end_date`, `activity`, `kpi`, `target`, `Y1`, `Y2`, `Y3`, `Y4`, `Y5`, `Comment`, `created_at`, `updated_at`) VALUES
+(2, 2, 1, 'To enforce  the Public  Health Act  on sewer  connections', '2025-10-01', '2025-10-31', 'Asingning new meter readers', '', '', 1, 2, 0, 0, 0, '', '2025-09-08 09:14:51', '2025-09-08 11:16:25'),
+(3, 2, 3, 'Improve  customer  satisfaction  index from  60% to 85%  by the year  2030 ', '2025-06-01', '2025-12-01', '', '', '', 0, 0, 0, 0, 0, '', '2025-09-08 11:20:22', '2025-09-08 11:20:22'),
+(4, 2, 1, 'To increase  customer  sewer  connections  from 6500 to  10,000 by the  year 2030 ', '2025-09-01', '2025-09-24', '', '', '', 0, 0, 0, 0, 0, '', '2025-09-08 11:22:07', '2025-09-08 11:22:07');
 
 -- --------------------------------------------------------
 
@@ -2110,6 +2155,13 @@ CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW 
 --
 -- Indexes for dumped tables
 --
+
+--
+-- Indexes for table `activities`
+--
+ALTER TABLE `activities`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `strategy_id` (`strategy_id`);
 
 --
 -- Indexes for table `allowance_types`
@@ -2347,6 +2399,12 @@ ALTER TABLE `users`
 --
 
 --
+-- AUTO_INCREMENT for table `activities`
+--
+ALTER TABLE `activities`
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
+
+--
 -- AUTO_INCREMENT for table `allowance_types`
 --
 ALTER TABLE `allowance_types`
@@ -2410,7 +2468,7 @@ ALTER TABLE `employee_allowances`
 -- AUTO_INCREMENT for table `employee_appraisals`
 --
 ALTER TABLE `employee_appraisals`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=67;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=68;
 
 --
 -- AUTO_INCREMENT for table `employee_deductions`
@@ -2482,7 +2540,7 @@ ALTER TABLE `notifications`
 -- AUTO_INCREMENT for table `objectives`
 --
 ALTER TABLE `objectives`
-  MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
+  MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=4;
 
 --
 -- AUTO_INCREMENT for table `payroll`
@@ -2512,13 +2570,13 @@ ALTER TABLE `sections`
 -- AUTO_INCREMENT for table `strategic_plan`
 --
 ALTER TABLE `strategic_plan`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=5;
 
 --
 -- AUTO_INCREMENT for table `strategies`
 --
 ALTER TABLE `strategies`
-  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
+  MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=5;
 
 --
 -- AUTO_INCREMENT for table `users`
@@ -2529,6 +2587,12 @@ ALTER TABLE `users`
 --
 -- Constraints for dumped tables
 --
+
+--
+-- Constraints for table `activities`
+--
+ALTER TABLE `activities`
+  ADD CONSTRAINT `activities_ibfk_1` FOREIGN KEY (`strategy_id`) REFERENCES `strategies` (`id`) ON DELETE CASCADE;
 
 --
 -- Constraints for table `appraisal_scores`

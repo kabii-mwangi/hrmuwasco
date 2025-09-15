@@ -31,22 +31,24 @@ function hasAppraisalAccess($userRole) {
     return in_array($userRole, $allowedRoles);
 }
 
+// Permission check function
 function hasPermission($requiredRole) {
-    global $user;
-    $role_hierarchy = [
-        'managing_director' => 6,
+    $userRole = $_SESSION['user_role'] ?? 'guest';
+    
+    // Permission hierarchy
+    $roles = [
         'super_admin' => 5,
-        'hr_manager' => 4,
-        'dept_head' => 3,
-        'section_head' => 2,
-        'manager' => 1,
+        'hr_manager' =>4 ,
+        'managing_director'=>3,
+        'dept_head' => 2,
+        'section head'=>1,
         'employee' => 0
     ];
-
-    $user_level = $role_hierarchy[$user['role']] ?? 0;
-    $required_level = $role_hierarchy[$requiredRole] ?? 0;
-
-    return $user_level >= $required_level;
+    
+    $userLevel = $roles[$userRole] ?? 0;
+    $requiredLevel = $roles[$requiredRole] ?? 0;
+    
+    return $userLevel >= $requiredLevel;
 }
 
 // Check if user has permission to access performance appraisals
@@ -440,6 +442,7 @@ if (!empty($appraisals)) {
 }
 
 $conn->close();
+include 'nav_bar.php';
 ?>
 
 <!DOCTYPE html>
@@ -729,11 +732,12 @@ $conn->close();
     </div>
 <?php endif; ?>
                 <div class="leave-tabs">
+                    <a href="strategic_plan.php" class="leave-tab">Strategic Plan</a>
                     <a href="employee_appraisal.php" class="leave-tab">Employee Appraisal</a>
                     <?php if(in_array($user['role'], ['hr_manager', 'super_admin', 'manager','managing_director', 'section_head', 'dept_head'])): ?>
                         <a href="performance_appraisal.php" class="leave-tab active">Performance Appraisal</a>
                     <?php endif; ?>
-                    <?php if(in_array($user['role'], ['hr_manager', 'super_admin', 'manager','managing_director'])): ?>
+                    <?php if(in_array($user['role'], ['hr_manager', 'super_admin', 'manager'])): ?>
                         <a href="appraisal_management.php" class="leave-tab">Appraisal Management</a>
                     <?php endif; ?>
                         <a href="completed_appraisals.php" class="leave-tab">Completed Appraisals</a>                   
