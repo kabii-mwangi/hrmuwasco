@@ -3,6 +3,12 @@ ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 ob_start();
+
+// Generate CSRF token
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
 $isSecure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') 
             || $_SERVER['SERVER_PORT'] == 443
             || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
@@ -17,13 +23,14 @@ if (session_status() == PHP_SESSION_NONE) {
         'samesite' => 'Lax'  
     ]);
     session_start();
-} // <-- THIS CLOSING BRACE WAS MISSING
+}
 
 // Check if user is logged in
 if (!isset($_SESSION['user_id'])) {
     header("Location: login.php");
     exit();
 }
+
 require_once 'auth.php';
 require_once 'auth_check.php';
 require_once 'config.php';
@@ -372,7 +379,6 @@ function getLeaveTypeBalance($employeeId, $leaveTypeId, $conn) {
     ];
 }
 
-// Add the missing function
 function getAnnualLeaveTypeId($conn) {
     $stmt = $conn->prepare("SELECT id FROM leave_types WHERE name LIKE '%annual%' LIMIT 1");
     $stmt->execute();
@@ -422,7 +428,7 @@ function calculateLeaveDeduction($employeeId, $leaveTypeId, $requestedDays, $con
         return $deductionPlan;
     }
 
-    // FIXED: Check for unlimited leave types using total_days == 0
+    // Check for unlimited leave types using total_days == 0
     $balance = getLeaveTypeBalance($employeeId, $leaveTypeId, $conn);
     if ($balance['total_days'] == 0) {
         $deductionPlan['warnings'][] = "Unlimited leave type—no balance deduction required.";
@@ -508,6 +514,78 @@ function getStatusDisplayName($status) {
         default: return ucfirst($status);
     }
 }
+
+// Check if user is currently on leave
+function isCurrentlyOnLeave($employeeId, $conn) {
+    $today = date('Y-m-d');
+    
+    $query = "SELECT id, start_date, end_date, status, leave_type_id 
+              FROM leave_applications 
+              WHERE employee_id = ? 
+              AND ? BETWEEN start_date AND end_date
+              AND status = 'approved'";
+    
+    $stmt = $conn->prepare($query);
+    $stmt->bind_param("is", $employeeId, $today);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    return $result->fetch_assoc();
+}
+
+// Check if user has pending applications
+function hasPendingApplications($employeeId, $conn) {
+    $query = "SELECT id, start_date, end_date, status, leave_type_id 
+              FROM leave_applications 
+              WHERE employee_id = ? 
+              AND status IN ('pending_subsection_head', 'pending_section_head', 'pending_dept_head', 'pending_managing_director', 'pending_hr', 'pending_bod_chair')";
+    
+    $stmt = $conn->prepare($query);
+    $stmt->bind_param("i", $employeeId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    $pendingApplications = [];
+    while ($row = $result->fetch_assoc()) {
+        $pendingApplications[] = $row;
+    }
+    
+    return $pendingApplications;
+}
+
+// Check for overlapping leave applications
+function hasOverlappingLeave($employeeId, $startDate, $endDate, $conn, $excludeApplicationId = null) {
+    $query = "SELECT id, start_date, end_date, status, leave_type_id 
+              FROM leave_applications 
+              WHERE employee_id = ? 
+              AND ((start_date BETWEEN ? AND ?) 
+                   OR (end_date BETWEEN ? AND ?) 
+                   OR (? BETWEEN start_date AND end_date) 
+                   OR (? BETWEEN start_date AND end_date))
+              AND status IN ('pending_subsection_head', 'pending_section_head', 'pending_dept_head', 'pending_managing_director', 'pending_hr', 'pending_bod_chair', 'approved')";
+    
+    $params = [$employeeId, $startDate, $endDate, $startDate, $endDate, $startDate, $endDate];
+    $types = "issssss";
+    
+    if ($excludeApplicationId) {
+        $query .= " AND id != ?";
+        $params[] = $excludeApplicationId;
+        $types .= "i";
+    }
+    
+    $stmt = $conn->prepare($query);
+    $stmt->bind_param($types, ...$params);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    
+    $overlappingLeaves = [];
+    while ($row = $result->fetch_assoc()) {
+        $overlappingLeaves[] = $row;
+    }
+    
+    return $overlappingLeaves;
+}
+
 // Function to determine initial workflow status
 function determineInitialWorkflowStatus($targetEmployeeId, $applicantUserId, $conn) {
     // Get target employee details
@@ -556,7 +634,7 @@ function determineInitialWorkflowStatus($targetEmployeeId, $applicantUserId, $co
     $targetRole = $targetEmployee['user_role'] ?? 'employee';
     $isSelfApplication = ($targetEmployeeId == getEmployeeIdFromUserId($applicantUserId, $conn));
     
-    // FIXED: HR Manager applying for themselves - auto-approve
+    // HR Manager applying for themselves - auto-approve
     if ($targetRole === 'hr_manager' && $isSelfApplication) {
         return 'approved';
     }
@@ -724,7 +802,6 @@ try {
 
 // Handle form submissions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // FIXED: CSRF verification
     if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
         $error = "Invalid security token. Please refresh and try again.";
     } else {
@@ -732,7 +809,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         switch ($action) {
             case 'apply_leave':
-                // FIXED: Force self for non-HR roles
+                // Force self for non-HR roles
                 if (!in_array($user['role'], ['hr_manager', 'super_admin', 'managing_director'])) {
                     $employeeId = $userEmployee['id'] ?? 0;
                 } else {
@@ -743,9 +820,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $endDate = $_POST['end_date'];
                 $reason = sanitizeInput($_POST['reason']);
 
+                // Validate required fields
+                if (!$employeeId || !$leaveTypeId || !$startDate || !$endDate) {
+                    $error = "Please fill in all required fields.";
+                    break;
+                }
+
+                // Validate leave application
+                $currentLeave = isCurrentlyOnLeave($employeeId, $conn);
+                if ($currentLeave) {
+                    $error = "Cannot apply for leave: Employee is currently on approved leave from " . 
+                            date('M d, Y', strtotime($currentLeave['start_date'])) . " to " . 
+                            date('M d, Y', strtotime($currentLeave['end_date'])) . ".";
+                    break;
+                }
+
+                $pendingApplications = hasPendingApplications($employeeId, $conn);
+                if (!empty($pendingApplications)) {
+                    $pendingDates = [];
+                    foreach ($pendingApplications as $pending) {
+                        $pendingDates[] = date('M d, Y', strtotime($pending['start_date'])) . " to " . 
+                                         date('M d, Y', strtotime($pending['end_date']));
+                    }
+                    $error = "Cannot apply for leave: Employee has " . count($pendingApplications) . 
+                            " pending leave application(s): " . implode("; ", $pendingDates) . ". Please wait for existing applications to be processed.";
+                    break;
+                }
+
+                $overlappingLeaves = hasOverlappingLeave($employeeId, $startDate, $endDate, $conn);
+                if (!empty($overlappingLeaves)) {
+                    $overlappingDates = [];
+                    foreach ($overlappingLeaves as $overlap) {
+                        $overlappingDates[] = date('M d, Y', strtotime($overlap['start_date'])) . " to " . 
+                                             date('M d, Y', strtotime($overlap['end_date'])) . " (" . 
+                                             getStatusDisplayName($overlap['status']) . ")";
+                    }
+                    $error = "Cannot apply for leave: Date range conflicts with existing leave: " . 
+                            implode("; ", $overlappingDates) . ". Please choose different dates.";
+                    break;
+                }
+
                 // Get leave type details for calculation
                 $leaveType = getLeaveTypeDetails($leaveTypeId, $conn);
-
                 if (!$leaveType) {
                     $error = "Invalid leave type selected.";
                     break;
@@ -762,205 +878,226 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 // Calculate deduction plan
                 $deductionPlan = calculateLeaveDeduction($employeeId, $leaveTypeId, $days, $conn);
-
                 if (!$deductionPlan['is_valid']) {
                     $error = implode(' ', $deductionPlan['warnings']);
                     break;
                 }
 
-                try {
-                    $conn->begin_transaction();
+               // CORRECT INSERT WITH MANUAL ID GENERATION
+try {
+    $conn->begin_transaction();
 
-                    // Get the managers for this employee
-                    $getManagersQuery = "SELECT
-                        e.section_id, e.department_id, e.subsection_id,
-                        (SELECT e2.id FROM employees e2 
-                         JOIN users u2 ON u2.employee_id = e2.employee_id 
-                         WHERE e2.subsection_id = e.subsection_id 
-                         AND u2.role = 'sub_section_head' LIMIT 1) as subsection_head_emp_id,
-                        (SELECT e3.id FROM employees e3 
-                         JOIN users u3 ON u3.employee_id = e3.employee_id 
-                         WHERE e3.section_id = e.section_id 
-                         AND u3.role = 'section_head' LIMIT 1) as section_head_emp_id,
-                        (SELECT e4.id FROM employees e4 
-                         JOIN users u4 ON u4.employee_id = e4.employee_id 
-                         WHERE e4.department_id = e.department_id 
-                         AND u4.role = 'dept_head' LIMIT 1) as dept_head_emp_id
-                        FROM employees e WHERE e.id = ?";
-                    $stmt = $conn->prepare($getManagersQuery);
-                    $stmt->bind_param("i", $employeeId);
-                    $stmt->execute();
-                    $managersResult = $stmt->get_result();
-                    $managers = $managersResult->fetch_assoc();
+    // Get the next available ID manually
+    $idQuery = "SELECT COALESCE(MAX(id), 0) + 1 as next_id FROM leave_applications";
+    $idResult = $conn->query($idQuery);
+    $nextId = $idResult->fetch_assoc()['next_id'];
 
-                    $subsectionHeadEmpId = $managers['subsection_head_emp_id'] ?? null;
-                    $sectionHeadEmpId = $managers['section_head_emp_id'] ?? null;
-                    $deptHeadEmpId = $managers['dept_head_emp_id'] ?? null;
+    // Get the managers for this employee
+    $getManagersQuery = "SELECT
+        e.section_id, e.department_id, e.subsection_id,
+        (SELECT e2.id FROM employees e2 
+         JOIN users u2 ON u2.employee_id = e2.employee_id 
+         WHERE e2.subsection_id = e.subsection_id 
+         AND u2.role = 'sub_section_head' LIMIT 1) as subsection_head_emp_id,
+        (SELECT e3.id FROM employees e3 
+         JOIN users u3 ON u3.employee_id = e3.employee_id 
+         WHERE e3.section_id = e.section_id 
+         AND u3.role = 'section_head' LIMIT 1) as section_head_emp_id,
+        (SELECT e4.id FROM employees e4 
+         JOIN users u4 ON u4.employee_id = e4.employee_id 
+         WHERE e4.department_id = e.department_id 
+         AND u4.role = 'dept_head' LIMIT 1) as dept_head_emp_id
+        FROM employees e WHERE e.id = ?";
+    $stmt = $conn->prepare($getManagersQuery);
+    $stmt->bind_param("i", $employeeId);
+    $stmt->execute();
+    $managersResult = $stmt->get_result();
+    $managers = $managersResult->fetch_assoc();
 
-                    // Determine initial status using the new function
-                    $initialStatus = determineInitialWorkflowStatus($employeeId, $user['id'], $conn);
+    $subsectionHeadEmpId = $managers['subsection_head_emp_id'] ?? null;
+    $sectionHeadEmpId = $managers['section_head_emp_id'] ?? null;
+    $deptHeadEmpId = $managers['dept_head_emp_id'] ?? null;
 
-                    // FIXED: Validate and fallback statuses
-                    if ($initialStatus === 'pending_subsection_head' && !$subsectionHeadEmpId) {
-                        $initialStatus = 'pending_section_head';
-                    } elseif ($initialStatus === 'pending_section_head' && !$sectionHeadEmpId) {
-                        $initialStatus = 'pending_dept_head';
-                    } elseif ($initialStatus === 'pending_dept_head' && !$deptHeadEmpId) {
-                        $initialStatus = 'pending_managing_director';
-                    }
+    // Determine initial status
+    $initialStatus = determineInitialWorkflowStatus($employeeId, $user['id'], $conn);
 
-                    // Insert application with deduction details
-                    $insertQuery = "INSERT INTO leave_applications 
-                                   (employee_id, leave_type_id, start_date, end_date, days_requested, reason, 
-                                    status,applied_at, subsection_head_emp_id, section_head_emp_id, dept_head_emp_id,
-                                    primary_days, annual_days, unpaid_days) 
-                                   VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?)";
-                    
-                    $stmt = $conn->prepare($insertQuery);
-                    
-                    $params = [
-                        $employeeId,
-                        $leaveTypeId,
-                        $startDate,
-                        $endDate,
-                        $days,
-                        $reason,
-                        $initialStatus,
-                        $subsectionHeadEmpId,
-                        $sectionHeadEmpId,
-                        $deptHeadEmpId,
-                        $deductionPlan['primary_deduction'],
-                        $deductionPlan['annual_deduction'],
-                        $deductionPlan['unpaid_days']
-                    ];
-
-                    $types = "iissssssiiiii";
-                    $stmt->bind_param($types, ...$params);
-
-                    if ($stmt->execute()) {
-                        $applicationId = $conn->insert_id;
-
-                        // FIXED: If auto-approved (HR Manager self-approval), update balances immediately and set status to approved
-                        if ($initialStatus === 'approved') {
-                            // Update status to approved
-                            $updateStatusStmt = $conn->prepare("UPDATE leave_applications SET status = 'approved' WHERE id = ?");
-                            $updateStatusStmt->bind_param("i", $applicationId);
-                            $updateStatusStmt->execute();
-
-                            // Update leave balances
-                            if ($deductionPlan['primary_deduction'] > 0) {
-                                $updatePrimaryQuery = "UPDATE employee_leave_balances 
-                                                      SET used_days = used_days + ?, 
-                                                          remaining_days = remaining_days - ?
-                                                      WHERE employee_id = ? 
-                                                      AND leave_type_id = ? 
-                                                      AND financial_year_id = ?";
-                                $stmt = $conn->prepare($updatePrimaryQuery);
-                                $current_fy_id = getCurrentFinancialYearId($conn);
-                                $stmt->bind_param("iiiii", 
-                                    $deductionPlan['primary_deduction'], 
-                                    $deductionPlan['primary_deduction'],
-                                    $employeeId, 
-                                    $leaveTypeId, 
-                                    $current_fy_id
-                                );
-                                $stmt->execute();
-                            }
-                            
-                            if ($deductionPlan['add_to_annual'] > 0) {
-                                // For claim-a-day: Add to annual
-                                $annualTypeId = getAnnualLeaveTypeId($conn);
-                                $updateAnnualQuery = "UPDATE employee_leave_balances 
-                                                     SET total_days = total_days + ?, 
-                                                         remaining_days = remaining_days + ?
-                                                     WHERE employee_id = ? 
-                                                     AND leave_type_id = ? 
-                                                     AND financial_year_id = ?";
-                                $stmt = $conn->prepare($updateAnnualQuery);
-                                $current_fy_id = getCurrentFinancialYearId($conn);
-                                $stmt->bind_param("iiiii", 
-                                    $deductionPlan['add_to_annual'], 
-                                    $deductionPlan['add_to_annual'],
-                                    $employeeId, 
-                                    $annualTypeId, 
-                                    $current_fy_id
-                                );
-                                $stmt->execute();
-                            } elseif ($deductionPlan['annual_deduction'] > 0) {
-                                $annualTypeId = getAnnualLeaveTypeId($conn);
-                                $updateAnnualQuery = "UPDATE employee_leave_balances 
-                                                     SET used_days = used_days + ?, 
-                                                         remaining_days = remaining_days - ?
-                                                     WHERE employee_id = ? 
-                                                     AND leave_type_id = ? 
-                                                     AND financial_year_id = ?";
-                                $stmt = $conn->prepare($updateAnnualQuery);
-                                $current_fy_id = getCurrentFinancialYearId($conn);
-                                $stmt->bind_param("iiiii", 
-                                    $deductionPlan['annual_deduction'], 
-                                    $deductionPlan['annual_deduction'],
-                                    $employeeId, 
-                                    $annualTypeId, 
-                                    $current_fy_id
-                                );
-                                $stmt->execute();
-                            }
-                        }
-
-                        // Log the transaction
-                        logLeaveTransaction($applicationId, $employeeId, $leaveTypeId, $days, $deductionPlan, $conn);
-
-                        // Log to leave_history
-                        $historyStmt = $conn->prepare("INSERT INTO leave_history 
-                                                      (leave_application_id, action, performed_by, comments, performed_at) 
-                                                      VALUES (?, ?, ?, ?, NOW())");
-                        $historyAction = ($initialStatus === 'approved') ? 'auto-approved' : 'applied';
-                        $comment = ($initialStatus === 'approved') 
-                            ? "Leave application auto-approved (HR Manager self-approval) for $days days" 
-                            : "Leave application submitted for $days days";
-                        $historyStmt->bind_param("isis", $applicationId, $historyAction, $user['id'], $comment);
-
-                        $historyStmt->execute();
-
-                        // Send confirmation email to employee
-                        $employeeEmailSent = sendLeaveNotification($applicationId, $conn, 'confirmation');
-                        
-                        // Send notification to approver based on status (unless auto-approved)
-                        $approverEmailSent = true;
-                        if ($initialStatus !== 'approved') {
-                            $approverEmailSent = sendLeaveNotification($applicationId, $conn, 'approver');
-                        }
-
-                        $conn->commit();
-                        
-                        if ($initialStatus === 'approved') {
-                            $_SESSION['flash_message'] = "Leave application submitted and auto-approved successfully!";
-                            $_SESSION['flash_type'] = "success";
-                        } else {
-                            $_SESSION['flash_message'] = "Leave application submitted successfully!" . 
-                                       ($employeeEmailSent ? " Confirmation email sent." : "") . 
-                                       ($approverEmailSent ? " Approver notified." : "");
-                            $_SESSION['flash_type'] = "success";
-                        }
-                        
-                        // Clear form
-                        $_POST = [];
-                    } else {
-                        $conn->rollback();
-                        $error = "Error submitting application: " . $conn->error;
-                    }
-                } catch (Exception $e) {
-                    $conn->rollback();
-                    $error = "Database error: " . $e->getMessage();
-                }
-                break;
-        }
+    // Validate and fallback statuses
+    if ($initialStatus === 'pending_subsection_head' && !$subsectionHeadEmpId) {
+        $initialStatus = 'pending_section_head';
+    } elseif ($initialStatus === 'pending_section_head' && !$sectionHeadEmpId) {
+        $initialStatus = 'pending_dept_head';
+    } elseif ($initialStatus === 'pending_dept_head' && !$deptHeadEmpId) {
+        $initialStatus = 'pending_managing_director';
     }
-}
 
+    // MODIFIED INSERT STATEMENT WITH MANUAL ID
+    $insertQuery = "INSERT INTO leave_applications 
+                   (id, employee_id, leave_type_id, start_date, end_date, days_requested, reason, 
+                    status, applied_at, subsection_head_emp_id, section_head_emp_id, dept_head_emp_id,
+                    primary_days, annual_days, unpaid_days, applied_by_user_id) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?)";
+
+    $stmt = $conn->prepare($insertQuery);
+    
+    // Prepare parameters WITH ID
+    $subsectionHeadEmpId = $subsectionHeadEmpId !== null ? $subsectionHeadEmpId : null;
+    $sectionHeadEmpId = $sectionHeadEmpId !== null ? $sectionHeadEmpId : null;
+    $deptHeadEmpId = $deptHeadEmpId !== null ? $deptHeadEmpId : null;
+
+    $params = [
+        $nextId, // Manually generated ID
+        $employeeId,
+        $leaveTypeId,
+        $startDate,
+        $endDate,
+        $days,
+        $reason,
+        $initialStatus,
+        $subsectionHeadEmpId,
+        $sectionHeadEmpId,
+        $deptHeadEmpId,
+        $deductionPlan['primary_deduction'],
+        $deductionPlan['annual_deduction'],
+        $deductionPlan['unpaid_days'],
+        $user['id']
+    ];
+
+    // 16 parameters for 16 placeholders (added ID)
+    $types = 'iiisssisiiidddi';
+
+    // Debug logging
+    error_log("Insert Parameters Count: " . count($params));
+    error_log("Types String Length: " . strlen($types));
+    error_log("Next ID: " . $nextId);
+
+    if ($stmt->bind_param($types, ...$params)) {
+        if ($stmt->execute()) {
+            $applicationId = $nextId; // Use our manually generated ID
+            error_log("SUCCESS: Application inserted with ID: " . $applicationId);
+
+            // Handle auto-approval for HR Manager
+            if ($initialStatus === 'approved') {
+                $updateStatusStmt = $conn->prepare("UPDATE leave_applications SET status = 'approved' WHERE id = ?");
+                $updateStatusStmt->bind_param("i", $applicationId);
+                $updateStatusStmt->execute();
+
+                // Update leave balances
+                if ($deductionPlan['primary_deduction'] > 0) {
+                    $updatePrimaryQuery = "UPDATE employee_leave_balances 
+                                          SET used_days = used_days + ?, 
+                                              remaining_days = remaining_days - ?
+                                          WHERE employee_id = ? 
+                                          AND leave_type_id = ? 
+                                          AND financial_year_id = ?";
+                    $stmt = $conn->prepare($updatePrimaryQuery);
+                    $current_fy_id = getCurrentFinancialYearId($conn);
+                    $stmt->bind_param("ddiii", 
+                        $deductionPlan['primary_deduction'], 
+                        $deductionPlan['primary_deduction'],
+                        $employeeId, 
+                        $leaveTypeId, 
+                        $current_fy_id
+                    );
+                    $stmt->execute();
+                }
+                
+                if (isset($deductionPlan['add_to_annual']) && $deductionPlan['add_to_annual'] > 0) {
+                    $annualTypeId = getAnnualLeaveTypeId($conn);
+                    $updateAnnualQuery = "UPDATE employee_leave_balances 
+                                         SET total_days = total_days + ?, 
+                                             remaining_days = remaining_days + ?
+                                         WHERE employee_id = ? 
+                                         AND leave_type_id = ? 
+                                         AND financial_year_id = ?";
+                    $stmt = $conn->prepare($updateAnnualQuery);
+                    $current_fy_id = getCurrentFinancialYearId($conn);
+                    $stmt->bind_param("ddiii", 
+                        $deductionPlan['add_to_annual'], 
+                        $deductionPlan['add_to_annual'],
+                        $employeeId, 
+                        $annualTypeId, 
+                        $current_fy_id
+                    );
+                    $stmt->execute();
+                } elseif ($deductionPlan['annual_deduction'] > 0) {
+                    $annualTypeId = getAnnualLeaveTypeId($conn);
+                    $updateAnnualQuery = "UPDATE employee_leave_balances 
+                                         SET used_days = used_days + ?, 
+                                             remaining_days = remaining_days - ?
+                                         WHERE employee_id = ? 
+                                         AND leave_type_id = ? 
+                                         AND financial_year_id = ?";
+                    $stmt = $conn->prepare($updateAnnualQuery);
+                    $current_fy_id = getCurrentFinancialYearId($conn);
+                    $stmt->bind_param("ddiii", 
+                        $deductionPlan['annual_deduction'], 
+                        $deductionPlan['annual_deduction'],
+                        $employeeId, 
+                        $annualTypeId, 
+                        $current_fy_id
+                    );
+                    $stmt->execute();
+                }
+            }
+
+            // Log the transaction
+            logLeaveTransaction($applicationId, $employeeId, $leaveTypeId, $days, $deductionPlan, $conn);
+
+            // Log to leave_history
+            $historyStmt = $conn->prepare("INSERT INTO leave_history 
+                                          (leave_application_id, action, performed_by, comments, performed_at) 
+                                          VALUES (?, ?, ?, ?, NOW())");
+            $historyAction = ($initialStatus === 'approved') ? 'auto-approved' : 'applied';
+            $comment = ($initialStatus === 'approved') 
+                ? "Leave application auto-approved (HR Manager self-approval) for $days days" 
+                : "Leave application submitted for $days days";
+            $historyStmt->bind_param("isis", $applicationId, $historyAction, $user['id'], $comment);
+            $historyStmt->execute();
+
+            // Send emails
+            $employeeEmailSent = sendLeaveNotification($applicationId, $conn, 'confirmation');
+            $approverEmailSent = true;
+            if ($initialStatus !== 'approved') {
+                $approverEmailSent = sendLeaveNotification($applicationId, $conn, 'approver');
+            }
+
+            $conn->commit();
+            
+            if ($initialStatus === 'approved') {
+                $_SESSION['flash_message'] = "Leave application submitted and auto-approved successfully!";
+                $_SESSION['flash_type'] = "success";
+            } else {
+                $_SESSION['flash_message'] = "Leave application submitted successfully!" . 
+                           ($employeeEmailSent ? " Confirmation email sent." : "") . 
+                           ($approverEmailSent ? " Approver notified." : "");
+                $_SESSION['flash_type'] = "success";
+            }
+            
+            // Clear form
+            $_POST = [];
+            
+        } else {
+            throw new Exception("Execute failed: " . $stmt->error);
+        }
+    } else {
+        throw new Exception("Bind failed: " . $stmt->error);
+    }
+} catch (Exception $e) {
+    $conn->rollback();
+    $error = "Database error: " . $e->getMessage();
+    error_log("Leave application error: " . $e->getMessage());
+}
+                break;
+                
+        } // END SWITCH
+    } // END ELSE (CSRF check)
+} // END POST check
+
+// Include header and navigation
 include 'header.php';
 include 'nav_bar.php';
 ?>
+
 
 <!DOCTYPE html>
 <html lang="en">
@@ -985,134 +1122,143 @@ include 'nav_bar.php';
             <?php endif; ?>
             <a href="profile.php" class="leave-tab ">My Leave Profile</a>
         </div>
-
-        <!-- Apply Leave Tab -->
-        <div class="tab-content">
-            <h3>Apply for Leave</h3>
-            
-            <?php if ($flash = getFlashMessage()): ?>
-                <div class="alert alert-<?php echo $flash['type']; ?>">
-                    <?php echo htmlspecialchars($flash['message']); ?>
-                </div>
-            <?php endif; ?>
-            
-            <?php if ($error): ?>
-                <div class="alert alert-danger"><?php echo htmlspecialchars($error); ?></div>
-            <?php endif; ?>
-
-            <?php if ($userEmployee || !empty($employees)): ?>
-                <form method="POST" action="" id="leaveApplicationForm">
-                    <input type="hidden" name="action" value="apply_leave">
-                    <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>"> <!-- FIXED: CSRF -->
-                    <div class="form-grid">
-                        <div class="form-group">
-                            <label for="employee_id">Employee</label>
-                            <select id="employee_id" name="employee_id" class="form-control" required>
-                                <option value="">Select Employee</option>
-                                <?php if (!empty($employees)): ?>
-                                    <?php foreach ($employees as $emp): ?>
-                                        <option value="<?php echo $emp['id']; ?>">
-                                            <?php 
-                                            $locationInfo = (!empty($emp['subsection_name']) 
-                                                ? ' - ' . $emp['subsection_name'] 
-                                                : (!empty($emp['section_name']) 
-                                                    ? ' - ' . $emp['section_name'] 
-                                                    : (!empty($emp['department_name']) 
-                                                        ? ' - ' . $emp['department_name'] 
-                                                        : '')
-                                                )
-                                            );
-                                            echo htmlspecialchars(
-                                                $emp['employee_id'] . ' - ' .
-                                                $emp['first_name'] . ' ' .
-                                                $emp['last_name'] . ' ' .
-                                                ($emp['surname'] ?? '') . ' (' .
-                                                ($emp['designation'] ?? '') . ')' .
-                                                $locationInfo
-                                            ); 
-                                            ?>
-                                        </option>
-                                    <?php endforeach; ?>
-                                <?php else: ?>
-                                    <!-- For regular employees (not in $employees array) -->
-                                    <?php if ($userEmployee): ?>
-                                        <option value="<?php echo $userEmployee['id']; ?>" selected>
-                                            <?php 
-                                            $locationInfo = (!empty($userEmployee['subsection_name']) 
-                                                ? ' - ' . $userEmployee['subsection_name'] 
-                                                : (!empty($userEmployee['section_name']) 
-                                                    ? ' - ' . $userEmployee['section_name'] 
-                                                    : (!empty($userEmployee['department_name']) 
-                                                        ? ' - ' . $userEmployee['department_name'] 
-                                                        : '')
-                                                )
-                                            );
-                                            echo htmlspecialchars(
-                                                $userEmployee['employee_id'] . ' - ' .
-                                                $userEmployee['first_name'] . ' ' .
-                                                $userEmployee['last_name'] . ' ' .
-                                                ($userEmployee['surname'] ?? '') . ' (' .
-                                                ($userEmployee['designation'] ?? '') . ')' .
-                                                $locationInfo
-                                            ); 
-                                            ?>
-                                        </option>
-                                    <?php endif; ?>
-                                <?php endif; ?>
-                            </select>
-                        </div>
-
-                        <div class="form-group">
-                            <label for="leave_type_id">Leave Type</label>
-                            <select name="leave_type_id" id="leave_type_id" class="form-control" required>
-                                <option value="">Select Leave Type</option>
-                                <!-- Options populated by JS -->
-                            </select>
-                        </div>
-
-                        <div class="form-group">
-                            <label for="start_date">Start Date</label>
-                            <input type="date" name="start_date" id="start_date" class="form-control" required 
-                                   value="<?php echo isset($_POST['start_date']) ? htmlspecialchars($_POST['start_date']) : ''; ?>">
-                        </div>
-
-                        <div class="form-group">
-                            <label for="end_date">End Date</label>
-                            <input type="date" name="end_date" id="end_date" class="form-control" required
-                                   value="<?php echo isset($_POST['end_date']) ? htmlspecialchars($_POST['end_date']) : ''; ?>">
-                        </div>
-
-                        <div class="form-group">
-                            <label for="calculated_days">Calculated Days</label>
-                            <input type="text" id="calculated_days" class="form-control" readonly>
-                        </div>
-                    </div>
-
-                    <!-- Enhanced Deduction Preview -->
-                    <div id="deduction_preview" class="deduction-preview" style="display: none;">
-                        <h5>Leave Deduction Preview</h5>
-                        <div id="deduction_details"></div>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="reason">Reason for Leave</label>
-                        <textarea name="reason" id="reason" class="form-control" rows="3" ><?php echo isset($_POST['reason']) ? htmlspecialchars($_POST['reason']) : ''; ?></textarea>
-                    </div>
-
-                    <div class="form-actions">
-                        <button type="submit" class="btn btn-primary" id="submit_btn">Submit Application</button>
-                        <button type="reset" class="btn btn-secondary">Reset Form</button>
-                    </div>
-                </form>
-            <?php else: ?>
-                <div class="alert alert-warning">
-                    Your user account is not linked to an employee record. Please contact HR to resolve this issue.
-                </div>
-            <?php endif; ?>
+<!-- Apply Leave Tab -->
+<div class="tab-content">
+    <h3>Apply for Leave</h3>
+    
+    <?php if ($flash = getFlashMessage()): ?>
+        <div class="alert alert-<?php echo $flash['type']; ?>">
+            <?php echo htmlspecialchars($flash['message']); ?>
         </div>
-    </div>
-</div>
+    <?php endif; ?>
+    
+    <?php if ($error): ?>
+        <div class="alert alert-danger"><?php echo htmlspecialchars($error); ?></div>
+    <?php endif; ?>
 
+    <?php if ($userEmployee || !empty($employees)): ?>
+        <form method="POST" action="" id="leaveApplicationForm">
+            <input type="hidden" name="action" value="apply_leave">
+            <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+            
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="employee_id">Employee</label>
+                    <select id="employee_id" name="employee_id" class="form-control" required>
+                        <option value="">Select Employee</option>
+                        <?php if (!empty($employees)): ?>
+                            <?php foreach ($employees as $emp): ?>
+                                <option value="<?php echo $emp['id']; ?>">
+                                    <?php 
+                                    $locationInfo = (!empty($emp['subsection_name']) 
+                                        ? ' - ' . $emp['subsection_name'] 
+                                        : (!empty($emp['section_name']) 
+                                            ? ' - ' . $emp['section_name'] 
+                                            : (!empty($emp['department_name']) 
+                                                ? ' - ' . $emp['department_name'] 
+                                                : '')
+                                        )
+                                    );
+                                    echo htmlspecialchars(
+                                        $emp['employee_id'] . ' - ' .
+                                        $emp['first_name'] . ' ' .
+                                        $emp['last_name'] . ' ' .
+                                        ($emp['surname'] ?? '') . ' (' .
+                                        ($emp['designation'] ?? '') . ')' .
+                                        $locationInfo
+                                    ); 
+                                    ?>
+                                </option>
+                            <?php endforeach; ?>
+                        <?php else: ?>
+                            <!-- For regular employees (not in $employees array) -->
+                            <?php if ($userEmployee): ?>
+                                <option value="<?php echo $userEmployee['id']; ?>" selected>
+                                    <?php 
+                                    $locationInfo = (!empty($userEmployee['subsection_name']) 
+                                        ? ' - ' . $userEmployee['subsection_name'] 
+                                        : (!empty($userEmployee['section_name']) 
+                                            ? ' - ' . $userEmployee['section_name'] 
+                                            : (!empty($userEmployee['department_name']) 
+                                                ? ' - ' . $userEmployee['department_name'] 
+                                                : '')
+                                        )
+                                    );
+                                    echo htmlspecialchars(
+                                        $userEmployee['employee_id'] . ' - ' .
+                                        $userEmployee['first_name'] . ' ' .
+                                        $userEmployee['last_name'] . ' ' .
+                                        ($userEmployee['surname'] ?? '') . ' (' .
+                                        ($userEmployee['designation'] ?? '') . ')' .
+                                        $locationInfo
+                                    ); 
+                                    ?>
+                                </option>
+                            <?php endif; ?>
+                        <?php endif; ?>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="leave_type_id">Leave Type</label>
+                    <select name="leave_type_id" id="leave_type_id" class="form-control" required>
+                        <option value="">Select Leave Type</option>
+                        <!-- Options populated by JS -->
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="start_date">Start Date</label>
+                    <input type="date" name="start_date" id="start_date" class="form-control" required 
+                           value="<?php echo isset($_POST['start_date']) ? htmlspecialchars($_POST['start_date']) : ''; ?>">
+                </div>
+
+                <div class="form-group">
+                    <label for="end_date">End Date</label>
+                    <input type="date" name="end_date" id="end_date" class="form-control" required
+                           value="<?php echo isset($_POST['end_date']) ? htmlspecialchars($_POST['end_date']) : ''; ?>">
+                </div>
+
+                <div class="form-group">
+                    <label for="calculated_days">Calculated Days</label>
+                    <input type="text" id="calculated_days" class="form-control" readonly>
+                </div>
+            </div>
+
+            <!-- Enhanced Deduction Preview -->
+            <div id="deduction_preview" class="deduction-preview">
+                <h5>Leave Deduction Preview</h5>
+                <div id="deduction_details"></div>
+            </div>
+
+            <div class="form-group">
+                <label for="reason">Reason for Leave</label>
+                <textarea name="reason" id="reason" class="form-control" rows="3" ><?php echo isset($_POST['reason']) ? htmlspecialchars($_POST['reason']) : ''; ?></textarea>
+            </div>
+
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary" id="submit_btn">Submit Application</button>
+                <button type="reset" class="btn btn-secondary">Reset Form</button>
+            </div>
+        </form>
+        
+        <!-- Employee Status Overview - MOVED BELOW THE FORM -->
+        <div id="employee_status_card" class="employee-status-card">
+            <h5>Employee Leave Status</h5>
+            <div id="employee_status_content"></div>
+        </div>
+        
+        <!-- Validation Section - ALSO BELOW THE FORM -->
+        <div id="validation_section" class="validation-section">
+            <h5>Leave Application Validation</h5>
+            <div id="validation_checks"></div>
+        </div>
+    <?php else: ?>
+        <div class="alert alert-warning">
+            Your user account is not linked to an employee record. Please contact HR to resolve this issue.
+        </div>
+    <?php endif; ?>
+</div>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const startDateInput = document.getElementById('start_date');
@@ -1122,30 +1268,118 @@ document.addEventListener('DOMContentLoaded', function() {
     const calculatedDays = document.getElementById('calculated_days');
     const deductionPreview = document.getElementById('deduction_preview');
     const deductionDetails = document.getElementById('deduction_details');
+    const validationSection = document.getElementById('validation_section');
+    const validationChecks = document.getElementById('validation_checks');
+    const employeeStatusCard = document.getElementById('employee_status_card');
+    const employeeStatusContent = document.getElementById('employee_status_content');
     const submitBtn = document.getElementById('submit_btn');
     const today = new Date().toISOString().split('T')[0];
 
-    // ✅ FIXED: Initialize correctly for all roles
+    // Initialize correctly for all roles
     <?php if (!empty($employees)): ?>
         // HR/Manager: auto-select first employee
-        const firstEmpId = <?php echo json_encode($employees[0]['id']); ?>;
-        employeeInput.value = firstEmpId;
-        loadLeaveTypesForEmployee(firstEmpId);
+        const firstEmpId = <?php echo json_encode($employees[0]['id'] ?? ''); ?>;
+        if (firstEmpId) {
+            employeeInput.value = firstEmpId;
+            loadLeaveTypesForEmployee(firstEmpId);
+            loadEmployeeStatus(firstEmpId);
+        }
     <?php elseif ($userEmployee): ?>
         // Regular user: self
-        employeeInput.value = <?php echo $userEmployee['id']; ?>;
-        loadLeaveTypesForEmployee(<?php echo $userEmployee['id']; ?>);
+        employeeInput.value = <?php echo $userEmployee['id'] ?? ''; ?>;
+        loadLeaveTypesForEmployee(<?php echo $userEmployee['id'] ?? ''; ?>);
+        loadEmployeeStatus(<?php echo $userEmployee['id'] ?? ''; ?>);
     <?php endif; ?>
 
     employeeInput.addEventListener('change', function() {
         const employeeId = this.value;
         if (employeeId) {
             loadLeaveTypesForEmployee(employeeId);
+            loadEmployeeStatus(employeeId);
         } else {
             leaveTypeInput.innerHTML = '<option value="">Select Leave Type</option>';
-            deductionPreview.style.display = 'none';
+            deductionPreview.classList.add('d-none');
+            validationSection.classList.add('d-none');
+            employeeStatusCard.classList.add('d-none');
         }
     });
+
+    // Load employee leave status
+    function loadEmployeeStatus(employeeId) {
+        fetch('get_employee_leave_status.php?employee_id=' + encodeURIComponent(employeeId))
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    employeeStatusCard.classList.add('d-none');
+                    return;
+                }
+
+                let statusHTML = '';
+                
+                // Employee info
+                if (data.employee_info) {
+                    statusHTML += `
+                        <div class="status-item">
+                            <span><strong>Employee:</strong></span>
+                            <span>${data.employee_info.first_name} ${data.employee_info.last_name} (${data.employee_info.employee_id})</span>
+                        </div>
+                        <div class="status-item">
+                            <span><strong>Department:</strong></span>
+                            <span>${data.employee_info.department || 'N/A'}</span>
+                        </div>
+                        <div class="status-item">
+                            <span><strong>Section:</strong></span>
+                            <span>${data.employee_info.section || 'N/A'}</span>
+                        </div>
+                    `;
+                }
+
+                // Current leave status
+                if (data.current_leave) {
+                    statusHTML += `
+                        <div class="status-item">
+                            <span><strong>Current Status:</strong></span>
+                            <span class="status-badge badge-danger">ON LEAVE</span>
+                        </div>
+                        <div class="status-item">
+                            <span><strong>Leave Period:</strong></span>
+                            <span>${new Date(data.current_leave.start_date).toLocaleDateString()} to ${new Date(data.current_leave.end_date).toLocaleDateString()}</span>
+                        </div>
+                    `;
+                } else {
+                    statusHTML += `
+                        <div class="status-item">
+                            <span><strong>Current Status:</strong></span>
+                            <span class="status-badge badge-success">AVAILABLE</span>
+                        </div>
+                    `;
+                }
+
+                // Pending applications
+                if (data.pending_applications && data.pending_applications.length > 0) {
+                    statusHTML += `
+                        <div class="status-item">
+                            <span><strong>Pending Applications:</strong></span>
+                            <span class="status-badge badge-warning">${data.pending_applications.length}</span>
+                        </div>
+                    `;
+                } else {
+                    statusHTML += `
+                        <div class="status-item">
+                            <span><strong>Pending Applications:</strong></span>
+                            <span class="status-badge badge-success">NONE</span>
+                        </div>
+                    `;
+                }
+
+                employeeStatusContent.innerHTML = statusHTML;
+                employeeStatusCard.classList.remove('d-none');
+            })
+            .catch(error => {
+                console.error('Error loading employee status:', error);
+                employeeStatusCard.classList.add('d-none');
+            });
+    }
 
     function loadLeaveTypesForEmployee(employeeId) {
         fetch('get_employee_leave_types.php?employee_id=' + encodeURIComponent(employeeId))
@@ -1172,7 +1406,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 startDateInput.value = '';
                 endDateInput.value = '';
                 calculatedDays.value = '';
-                deductionPreview.style.display = 'none';
+                deductionPreview.classList.add('d-none');
+                validationSection.classList.add('d-none');
             })
             .catch(error => {
                 console.error('Error loading leave types:', error);
@@ -1183,7 +1418,8 @@ document.addEventListener('DOMContentLoaded', function() {
     function calculateDays() {
         if (!startDateInput.value || !endDateInput.value || !leaveTypeInput.value) {
             calculatedDays.value = '';
-            deductionPreview.style.display = 'none';
+            deductionPreview.classList.add('d-none');
+            validationSection.classList.add('d-none');
             return;
         }
 
@@ -1191,7 +1427,8 @@ document.addEventListener('DOMContentLoaded', function() {
         const end = new Date(endDateInput.value);
         if (end < start) {
             calculatedDays.value = 'Invalid date range';
-            deductionPreview.style.display = 'none';
+            deductionPreview.classList.add('d-none');
+            validationSection.classList.add('d-none');
             return;
         }
 
@@ -1211,6 +1448,139 @@ document.addEventListener('DOMContentLoaded', function() {
 
         calculatedDays.value = diffDays + ' days';
         calculateDeduction(leaveTypeId, diffDays);
+        validateLeaveApplication();
+    }
+
+    // Function to validate leave application
+    function validateLeaveApplication() {
+        const employeeId = employeeInput.value;
+        const startDate = startDateInput.value;
+        const endDate = endDateInput.value;
+
+        if (!employeeId || !startDate || !endDate) {
+            validationSection.classList.add('d-none');
+            return;
+        }
+
+        // Show loading state
+        validationChecks.innerHTML = '<div class="validation-check">Checking availability...</div>';
+        validationSection.classList.remove('d-none');
+
+        // Create form data
+        const formData = new FormData();
+        formData.append('employee_id', employeeId);
+        formData.append('start_date', startDate);
+        formData.append('end_date', endDate);
+
+        fetch('validate_leave_application.php', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.error) {
+                throw new Error(data.error);
+            }
+
+            let allValid = true;
+            let validationHTML = '';
+
+            // Check current leave status
+            if (data.current_leave) {
+                validationHTML += `
+                    <div class="validation-check error">
+                        <span class="validation-icon">❌</span>
+                        <strong>Currently on Leave:</strong> Employee is on approved leave from ${data.current_leave.start_date} to ${data.current_leave.end_date}
+                    </div>
+                `;
+                allValid = false;
+            } else {
+                validationHTML += `
+                    <div class="validation-check success">
+                        <span class="validation-icon">✅</span>
+                        <strong>Available:</strong> Employee is not currently on leave
+                    </div>
+                `;
+            }
+
+            // Check pending applications
+            if (data.pending_applications && data.pending_applications.length > 0) {
+                const pendingDates = data.pending_applications.map(app => 
+                    `${new Date(app.start_date).toLocaleDateString()} to ${new Date(app.end_date).toLocaleDateString()}`
+                ).join('; ');
+                
+                validationHTML += `
+                    <div class="validation-check error">
+                        <span class="validation-icon">❌</span>
+                        <strong>Pending Applications:</strong> Employee has ${data.pending_applications.length} pending leave application(s)
+                        <br><small>${pendingDates}</small>
+                    </div>
+                `;
+                allValid = false;
+            } else {
+                validationHTML += `
+                    <div class="validation-check success">
+                        <span class="validation-icon">✅</span>
+                        <strong>No Pending Applications:</strong> No pending leave applications found
+                    </div>
+                `;
+            }
+
+            // Check overlapping leave
+            if (data.overlapping_leaves && data.overlapping_leaves.length > 0) {
+                const overlappingDates = data.overlapping_leaves.map(leave => 
+                    `${new Date(leave.start_date).toLocaleDateString()} to ${new Date(leave.end_date).toLocaleDateString()} (${leave.status})`
+                ).join('; ');
+                
+                validationHTML += `
+                    <div class="validation-check error">
+                        <span class="validation-icon">❌</span>
+                        <strong>Date Conflict:</strong> Overlapping with ${data.overlapping_leaves.length} existing leave application(s)
+                        <br><small>${overlappingDates}</small>
+                    </div>
+                `;
+                allValid = false;
+            } else {
+                validationHTML += `
+                    <div class="validation-check success">
+                        <span class="validation-icon">✅</span>
+                        <strong>Date Available:</strong> No overlapping leave found
+                    </div>
+                `;
+            }
+
+            validationChecks.innerHTML = validationHTML;
+            updateSubmitButton(allValid);
+
+        })
+        .catch(error => {
+            console.error('Validation error:', error);
+            validationChecks.innerHTML = `
+                <div class="validation-check warning">
+                    <span class="validation-icon">⚠️</span>
+                    <strong>Validation Temporarily Unavailable:</strong> Could not check leave availability. You can still submit the application.
+                </div>
+            `;
+            updateSubmitButton(true);
+        });
+    }
+
+    // Helper function to update submit button state
+    function updateSubmitButton(isValid) {
+        if (isValid) {
+            submitBtn.disabled = false;
+            submitBtn.className = 'btn btn-primary';
+            submitBtn.textContent = 'Submit Application';
+        } else {
+            submitBtn.disabled = true;
+            submitBtn.className = 'btn btn-secondary';
+            submitBtn.textContent = 'Cannot Submit - Validation Failed';
+        }
     }
 
     function calculateDeduction(leaveTypeId, requestedDays) {
@@ -1239,7 +1609,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 </div>
             `;
             deductionDetails.innerHTML = deductionHtml;
-            deductionPreview.style.display = 'block';
+            deductionPreview.classList.remove('d-none');
             
             // Disable submit button
             submitBtn.disabled = true;
@@ -1257,7 +1627,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         );
                         if (shortLeaveOption) {
                             leaveTypeInput.value = 6;
-                            calculateDays(); // Recalculate with short leave
+                            calculateDays();
                         }
                     });
                 }
@@ -1268,7 +1638,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const balances = window.currentEmployeeLeaveBalances || [];
         const leaveBalance = balances.find(lb => lb.leave_type_id == leaveTypeId);
-        const annualBalance = balances.find(lb => lb.leave_type_id == 1); // Annual = ID 1
+        const annualBalance = balances.find(lb => lb.leave_type_id == 1);
 
         const totalDays = leaveBalance ? leaveBalance.total_days : 0;
         if (totalDays === 0) {
@@ -1307,7 +1677,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
-        // FIXED: Add note for HR users on balance checks
+        // Add note for HR users on balance checks
         if ('<?php echo $user["role"]; ?>' !== 'hr_manager') {
             warnings.push('Note: Final approval checks balance availability.');
         }
@@ -1327,7 +1697,7 @@ document.addEventListener('DOMContentLoaded', function() {
             html += `<div class="deduction-item"><span>Annual Deduction:</span><span>${annual} days</span></div>`;
         }
         if (unpaid > 0) {
-            html += `<div class="deduction-item" style="color:#dc3545;"><span>Unpaid Days:</span><span>${unpaid} days</span></div>`;
+            html += `<div class="deduction-item unpaid-days"><span>Unpaid Days:</span><span>${unpaid} days</span></div>`;
         }
         if (message) {
             html += `<div class="info-text">${message}</div>`;
@@ -1338,16 +1708,18 @@ document.addEventListener('DOMContentLoaded', function() {
         });
 
         deductionDetails.innerHTML = html;
-        deductionPreview.style.display = 'block';
+        deductionPreview.classList.remove('d-none');
 
-        // Update button
-        submitBtn.disabled = false;
-        if (unpaid > 0) {
-            submitBtn.className = 'btn btn-warning';
-            submitBtn.textContent = 'Submit (Includes Unpaid Leave)';
-        } else {
-            submitBtn.className = 'btn btn-primary';
-            submitBtn.textContent = 'Submit Application';
+        // Update button (only if validation passes)
+        const isCurrentlyDisabled = submitBtn.disabled;
+        if (!isCurrentlyDisabled) {
+            if (unpaid > 0) {
+                submitBtn.className = 'btn btn-warning';
+                submitBtn.textContent = 'Submit (Includes Unpaid Leave)';
+            } else {
+                submitBtn.className = 'btn btn-primary';
+                submitBtn.textContent = 'Submit Application';
+            }
         }
     }
 
@@ -1368,8 +1740,6 @@ document.addEventListener('DOMContentLoaded', function() {
             endDateInput.min = this.value;
         }
     });
-
-    
 });
 </script>
 
