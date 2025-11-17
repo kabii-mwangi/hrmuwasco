@@ -1,4 +1,5 @@
 <?php
+ob_start();
 require_once 'config.php';
 require_once 'auth.php';
 
@@ -18,11 +19,179 @@ $filter_office = $_GET['office'] ?? 'all';
 $filter_status = $_GET['status'] ?? 'all';
 $absent_date = $_GET['absent_date'] ?? $filter_date; // Separate date for absent filtering
 
+// Pagination parameters
+$attendance_page = isset($_GET['attendance_page']) ? max(1, intval($_GET['attendance_page'])) : 1;
+$absent_page = isset($_GET['absent_page']) ? max(1, intval($_GET['absent_page'])) : 1;
+$records_per_page = 20;
+
 // Get all offices for filter
 $offices_query = "SELECT id, name FROM offices ORDER BY name";
 $offices_result = $conn->query($offices_query);
 
-// Get today's attendance with real-time status
+// Handle deduction action
+if (isset($_POST['deduct_leave']) && hasPermission('hr_manager')) {
+    $employee_id = intval($_POST['employee_id']);
+    $deduction_date = $_POST['deduction_date'];
+    $csrf_token = $_POST['csrf_token'] ?? '';
+    
+    // Verify CSRF token
+    if (!hash_equals($_SESSION['csrf_token'] ?? '', $csrf_token)) {
+        $_SESSION['flash_message'] = "Security token invalid. Please try again.";
+        $_SESSION['flash_type'] = "danger";
+        header("Location: attendance_dashboard.php?" . http_build_query($_GET));
+        exit();
+    }
+    
+    try {
+        $conn->begin_transaction();
+        
+        // Check if deduction already exists for this employee and date
+        $check_query = "SELECT id FROM absent_deductions WHERE employee_id = ? AND deduction_date = ?";
+        $check_stmt = $conn->prepare($check_query);
+        $check_stmt->bind_param("is", $employee_id, $deduction_date);
+        $check_stmt->execute();
+        $existing_deduction = $check_stmt->get_result()->fetch_assoc();
+        
+        if ($existing_deduction) {
+            throw new Exception("Deduction already processed for this employee on selected date.");
+        }
+        
+        // Get employee details
+        $employee_query = "SELECT e.id, e.employee_id, e.first_name, e.last_name 
+                          FROM employees e WHERE e.id = ?";
+        $employee_stmt = $conn->prepare($employee_query);
+        $employee_stmt->bind_param("i", $employee_id);
+        $employee_stmt->execute();
+        $employee = $employee_stmt->get_result()->fetch_assoc();
+        
+        if (!$employee) {
+            throw new Exception("Employee not found.");
+        }
+        
+        // Get annual leave type ID (assuming id=1 is annual leave)
+        $leave_type_query = "SELECT id FROM leave_types WHERE name LIKE '%annual%' OR name LIKE '%Annual%' LIMIT 1";
+        $leave_type_result = $conn->query($leave_type_query);
+        $annual_leave_type = $leave_type_result->fetch_assoc();
+        
+        if (!$annual_leave_type) {
+            throw new Exception("Annual leave type not found in system.");
+        }
+        
+        $annual_leave_type_id = $annual_leave_type['id'];
+        
+        // Ensure leave balance exists for annual leave
+        $balance_check_query = "
+            SELECT id FROM employee_leave_balances 
+            WHERE employee_id = ? AND leave_type_id = ? AND financial_year_id = (
+                SELECT id FROM financial_years WHERE is_active = 1 LIMIT 1
+            )
+        ";
+        $balance_stmt = $conn->prepare($balance_check_query);
+        $balance_stmt->bind_param("ii", $employee_id, $annual_leave_type_id);
+        $balance_stmt->execute();
+        
+        if ($balance_stmt->get_result()->num_rows === 0) {
+            // Create balance record if it doesn't exist
+            $financial_year_query = "SELECT id FROM financial_years WHERE is_active = 1 LIMIT 1";
+            $fy_result = $conn->query($financial_year_query);
+            $financial_year = $fy_result->fetch_assoc();
+            
+            if (!$financial_year) {
+                throw new Exception("No active financial year found.");
+            }
+            
+            $default_days_query = "SELECT default_days FROM leave_types WHERE id = ?";
+            $default_stmt = $conn->prepare($default_days_query);
+            $default_stmt->bind_param("i", $annual_leave_type_id);
+            $default_stmt->execute();
+            $leave_type = $default_stmt->get_result()->fetch_assoc();
+            
+            $allocated_days = $leave_type['default_days'] ?? 21; // Default to 21 days if not set
+            
+            $create_balance_query = "
+                INSERT INTO employee_leave_balances 
+                (employee_id, leave_type_id, financial_year_id, allocated_days, used_days, remaining_days, total_days, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 0, ?, ?, NOW(), NOW())
+            ";
+            $create_stmt = $conn->prepare($create_balance_query);
+            $initial_remaining = $allocated_days;
+            $initial_total = $allocated_days;
+            $create_stmt->bind_param("iiiddd", $employee_id, $annual_leave_type_id, $financial_year['id'], $allocated_days, $initial_remaining, $initial_total);
+            $create_stmt->execute();
+        }
+        
+        // Update leave balance - deduct 1 day from annual leave
+        $update_balance_query = "
+            UPDATE employee_leave_balances 
+            SET used_days = used_days + 1,
+                total_days = total_days - 1,
+                updated_at = NOW()
+            WHERE employee_id = ? AND leave_type_id = ? AND financial_year_id = (
+                SELECT id FROM financial_years WHERE is_active = 1 LIMIT 1
+            )
+        ";
+        $update_stmt = $conn->prepare($update_balance_query);
+        $update_stmt->bind_param("ii", $employee_id, $annual_leave_type_id);
+        $update_stmt->execute();
+        
+        if ($update_stmt->affected_rows === 0) {
+            throw new Exception("Failed to update leave balance.");
+        }
+        
+        // Record the deduction
+        $deduction_query = "
+            INSERT INTO absent_deductions 
+            (employee_id, deduction_date, leave_type_id, days_deducted, deducted_by, deducted_at, reason)
+            VALUES (?, ?, ?, 1, ?, NOW(), 'Absence deduction - Unauthorized absence')
+        ";
+        $deduction_stmt = $conn->prepare($deduction_query);
+        $deduction_stmt->bind_param("isii", $employee_id, $deduction_date, $annual_leave_type_id, $_SESSION['user_id']);
+        $deduction_stmt->execute();
+        
+        $conn->commit();
+        
+        $_SESSION['flash_message'] = "Successfully deducted 1 annual leave day from " . $employee['first_name'] . " " . $employee['last_name'] . " for absence on " . date('M j, Y', strtotime($deduction_date));
+        $_SESSION['flash_type'] = "success";
+        
+    } catch (Exception $e) {
+        $conn->rollback();
+        $_SESSION['flash_message'] = "Error processing deduction: " . $e->getMessage();
+        $_SESSION['flash_type'] = "danger";
+    }
+    
+    header("Location: attendance_dashboard.php?" . http_build_query($_GET));
+    exit();
+}
+
+// Get total count for attendance records (for pagination)
+$attendance_count_query = "
+    SELECT COUNT(DISTINCT a.id) as total_count
+    FROM attendance a
+    INNER JOIN employees e ON a.employee_id = e.id
+    INNER JOIN offices o ON a.office_id = o.id
+    WHERE DATE(a.clock_in) = ?
+";
+
+if ($filter_office !== 'all') {
+    $attendance_count_query .= " AND a.office_id = " . intval($filter_office);
+}
+
+if ($filter_status !== 'all') {
+    $attendance_count_query .= " AND a.status = '" . $conn->real_escape_string($filter_status) . "'";
+}
+
+$count_stmt = $conn->prepare($attendance_count_query);
+$count_stmt->bind_param("s", $filter_date);
+$count_stmt->execute();
+$attendance_count_result = $count_stmt->get_result()->fetch_assoc();
+$total_attendance_records = $attendance_count_result['total_count'] ?? 0;
+$count_stmt->close();
+
+// Calculate pagination for attendance records
+$total_attendance_pages = ceil($total_attendance_records / $records_per_page);
+$attendance_offset = ($attendance_page - 1) * $records_per_page;
+
+// Get today's attendance with real-time status (with pagination)
 $attendance_query = "
     SELECT 
         a.id,
@@ -56,10 +225,10 @@ if ($filter_status !== 'all') {
     $attendance_query .= " AND a.status = '" . $conn->real_escape_string($filter_status) . "'";
 }
 
-$attendance_query .= " ORDER BY a.clock_in DESC";
+$attendance_query .= " ORDER BY a.clock_in DESC LIMIT ? OFFSET ?";
 
 $stmt = $conn->prepare($attendance_query);
-$stmt->bind_param("s", $filter_date);
+$stmt->bind_param("sii", $filter_date, $records_per_page, $attendance_offset);
 $stmt->execute();
 $attendance_records = $stmt->get_result();
 $stmt->close();
@@ -111,7 +280,56 @@ while($row = $on_leave_result->fetch_assoc()) {
 }
 $on_leave_stmt->close();
 
-// Get absent employees for the selected date - EXCLUDING THOSE ON LEAVE
+// Get employees who already have deductions for the absent date
+$deducted_employees_query = "
+    SELECT DISTINCT employee_id 
+    FROM absent_deductions 
+    WHERE deduction_date = ?
+";
+$deducted_stmt = $conn->prepare($deducted_employees_query);
+$deducted_stmt->bind_param("s", $absent_date);
+$deducted_stmt->execute();
+$deducted_result = $deducted_stmt->get_result();
+$deducted_employees = [];
+while($row = $deducted_result->fetch_assoc()) {
+    $deducted_employees[] = $row['employee_id'];
+}
+$deducted_stmt->close();
+
+// Get total count for absent employees (for pagination)
+$absent_count_query = "
+    SELECT COUNT(*) as total_count
+    FROM employees e
+    INNER JOIN offices o ON e.office_id = o.id
+    WHERE e.employee_status = 'active'
+    AND e.id NOT IN (
+        SELECT DISTINCT employee_id 
+        FROM attendance 
+        WHERE DATE(clock_in) = ?
+    )
+";
+
+// Exclude employees who are on leave
+if (!empty($on_leave_employees)) {
+    $absent_count_query .= " AND e.id NOT IN (" . implode(',', array_map('intval', $on_leave_employees)) . ")";
+}
+
+if ($filter_office !== 'all') {
+    $absent_count_query .= " AND e.office_id = " . intval($filter_office);
+}
+
+$absent_count_stmt = $conn->prepare($absent_count_query);
+$absent_count_stmt->bind_param("s", $absent_date);
+$absent_count_stmt->execute();
+$absent_count_result = $absent_count_stmt->get_result()->fetch_assoc();
+$total_absent_records = $absent_count_result['total_count'] ?? 0;
+$absent_count_stmt->close();
+
+// Calculate pagination for absent employees
+$total_absent_pages = ceil($total_absent_records / $records_per_page);
+$absent_offset = ($absent_page - 1) * $records_per_page;
+
+// Get absent employees for the selected date - EXCLUDING THOSE ON LEAVE (with pagination)
 $absent_query = "
     SELECT 
         e.id,
@@ -121,10 +339,12 @@ $absent_query = "
         e.email,
         e.phone,
         o.name as office_name,
-        d.name as department_name
+        d.name as department_name,
+        CASE WHEN ld.id IS NOT NULL THEN 1 ELSE 0 END as deduction_processed
     FROM employees e
     INNER JOIN offices o ON e.office_id = o.id
     LEFT JOIN departments d ON e.department_id = d.id
+    LEFT JOIN absent_deductions ld ON e.id = ld.employee_id AND ld.deduction_date = ?
     WHERE e.employee_status = 'active'
     AND e.id NOT IN (
         SELECT DISTINCT employee_id 
@@ -142,10 +362,10 @@ if ($filter_office !== 'all') {
     $absent_query .= " AND e.office_id = " . intval($filter_office);
 }
 
-$absent_query .= " ORDER BY o.name, e.first_name, e.last_name";
+$absent_query .= " ORDER BY o.name, e.first_name, e.last_name LIMIT ? OFFSET ?";
 
 $absent_stmt = $conn->prepare($absent_query);
-$absent_stmt->bind_param("s", $absent_date);
+$absent_stmt->bind_param("ssii", $absent_date, $absent_date, $records_per_page, $absent_offset);
 $absent_stmt->execute();
 $absent_employees = $absent_stmt->get_result();
 $absent_stmt->close();
@@ -165,7 +385,7 @@ $total_employees_data = $total_result->fetch_assoc();
 $total_employees = $total_employees_data['total_active'] ?? 0;
 
 // Update statistics
-$stats['absent_employees'] = $absent_employees->num_rows;
+$stats['absent_employees'] = $total_absent_records; // Use total count for accurate stats
 $stats['total_active'] = $total_employees;
 $stats['on_leave'] = count($on_leave_employees);
 
@@ -202,6 +422,43 @@ function calculateDistance($lat1, $lon1, $lat2, $lon2) {
     $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
     return $earth_radius * $c;
 }
+
+// Function to generate pagination links
+function generatePagination($current_page, $total_pages, $page_param) {
+    if ($total_pages <= 1) return '';
+    
+    $pagination = '<div class="pagination">';
+    
+    // Previous button
+    if ($current_page > 1) {
+        $pagination .= '<a href="?' . http_build_query(array_merge($_GET, [$page_param => $current_page - 1])) . '" class="pagination-btn">';
+        $pagination .= '<i class="fas fa-chevron-left"></i> Previous';
+        $pagination .= '</a>';
+    }
+    
+    // Page numbers
+    $start_page = max(1, $current_page - 2);
+    $end_page = min($total_pages, $current_page + 2);
+    
+    for ($i = $start_page; $i <= $end_page; $i++) {
+        if ($i == $current_page) {
+            $pagination .= '<span class="pagination-btn active">' . $i . '</span>';
+        } else {
+            $pagination .= '<a href="?' . http_build_query(array_merge($_GET, [$page_param => $i])) . '" class="pagination-btn">' . $i . '</a>';
+        }
+    }
+    
+    // Next button
+    if ($current_page < $total_pages) {
+        $pagination .= '<a href="?' . http_build_query(array_merge($_GET, [$page_param => $current_page + 1])) . '" class="pagination-btn">';
+        $pagination .= 'Next <i class="fas fa-chevron-right"></i>';
+        $pagination .= '</a>';
+    }
+    
+    $pagination .= '</div>';
+    return $pagination;
+} 
+ob_end_flush();
 ?>
 
 <style>
@@ -375,6 +632,12 @@ function calculateDistance($lat1, $lon1, $lat2, $lon2) {
     border: 1px solid rgba(255, 193, 7, 0.3);
 }
 
+.badge-success {
+    background: rgba(40, 167, 69, 0.2);
+    color: var(--success-color);
+    border: 1px solid rgba(40, 167, 69, 0.3);
+}
+
 .absent-table {
     margin-top: 2rem;
 }
@@ -428,10 +691,159 @@ function calculateDistance($lat1, $lon1, $lat2, $lon2) {
 .absent-filters .filter-row {
     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
 }
+
+/* Pagination Styles */
+.pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.pagination-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 6px;
+    color: rgba(255, 255, 255, 0.8);
+    text-decoration: none;
+    font-size: 0.9rem;
+    transition: all 0.3s ease;
+}
+
+.pagination-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+    text-decoration: none;
+}
+
+.pagination-btn.active {
+    background: var(--primary-color);
+    color: white;
+    border-color: var(--primary-color);
+}
+
+.pagination-info {
+    text-align: center;
+    margin-top: 0.5rem;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.9rem;
+}
+
+.table-header-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.records-count {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.9rem;
+}
+
+/* Deduction Button Styles */
+.btn-deduct {
+    background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+    color: white;
+    border: none;
+    padding: 0.4rem 0.8rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.btn-deduct:hover {
+    background: linear-gradient(135deg, #c82333 0%, #bd2130 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(220, 53, 69, 0.3);
+}
+
+.btn-deduct:disabled {
+    background: #6c757d;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+.btn-deduct-success {
+    background: linear-gradient(135deg, #28a745 0%, #218838 100%);
+    color: white;
+    border: none;
+    padding: 0.4rem 0.8rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: default;
+}
+
+.deduction-form {
+    display: inline;
+}
+
+.flash-message {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 1rem 1.5rem;
+    border-radius: 8px;
+    color: white;
+    z-index: 10000;
+    max-width: 400px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    animation: slideInRight 0.3s ease-out;
+}
+
+.flash-success {
+    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+    border-left: 4px solid #155724;
+}
+
+.flash-danger {
+    background: linear-gradient(135deg, #dc3545 0%, #e83e8c 100%);
+    border-left: 4px solid #721c24;
+}
+
+@keyframes slideInRight {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+.deduction-info {
+    font-size: 0.8rem;
+    color: inherit; /* Inherit color from parent */
+    margin-top: 0.5rem;
+    text-align: center;
+    opacity: 0.8;
+}
 </style>
 
 <div class="main-content">
     <div class="content">
+        <!-- Flash Messages -->
+        <?php if (isset($_SESSION['flash_message'])): ?>
+            <div class="flash-message flash-<?= $_SESSION['flash_type'] ?? 'info' ?>">
+                <?= htmlspecialchars($_SESSION['flash_message']) ?>
+                <button type="button" class="close-flash" style="background: none; border: none; color: white; margin-left: 1rem; cursor: pointer;">×</button>
+            </div>
+            <?php unset($_SESSION['flash_message'], $_SESSION['flash_type']); ?>
+        <?php endif; ?>
+
         <div class="page-header">
             <h1><i class="fas fa-chart-bar"></i> Attendance Dashboard</h1>
             <div class="real-time-indicator">
@@ -501,6 +913,8 @@ function calculateDistance($lat1, $lon1, $lat2, $lon2) {
             </div>
             <div class="card-body">
                 <form method="GET" action="" class="filter-row">
+                    <input type="hidden" name="attendance_page" value="1">
+                    <input type="hidden" name="absent_page" value="<?= $absent_page ?>">
                     <div class="filter-group">
                         <label>Date</label>
                         <input type="date" name="date" value="<?= htmlspecialchars($filter_date) ?>" 
@@ -581,6 +995,11 @@ function calculateDistance($lat1, $lon1, $lat2, $lon2) {
                 </div>
             </div>
             <div class="card-body">
+                <div class="table-header-info">
+                    <div class="records-count">
+                        Showing <?= min($records_per_page, $attendance_records->num_rows) ?> of <?= $total_attendance_records ?> records
+                    </div>
+                </div>
                 <div class="attendance-table-wrapper">
                     <table class="table" id="attendance-table">
                         <thead>
@@ -665,6 +1084,14 @@ function calculateDistance($lat1, $lon1, $lat2, $lon2) {
                         </tbody>
                     </table>
                 </div>
+                
+                <!-- Attendance Records Pagination -->
+                <?= generatePagination($attendance_page, $total_attendance_pages, 'attendance_page') ?>
+                <?php if ($total_attendance_pages > 0): ?>
+                <div class="pagination-info">
+                    Page <?= $attendance_page ?> of <?= $total_attendance_pages ?>
+                </div>
+                <?php endif; ?>
             </div>
         </div>
 
@@ -685,6 +1112,8 @@ function calculateDistance($lat1, $lon1, $lat2, $lon2) {
                         <input type="hidden" name="date" value="<?= htmlspecialchars($filter_date) ?>">
                         <input type="hidden" name="office" value="<?= htmlspecialchars($filter_office) ?>">
                         <input type="hidden" name="status" value="<?= htmlspecialchars($filter_status) ?>">
+                        <input type="hidden" name="attendance_page" value="<?= $attendance_page ?>">
+                        <input type="hidden" name="absent_page" value="1">
                         <div class="filter-group">
                             <label>Check Absence For Date</label>
                             <input type="date" name="absent_date" value="<?= htmlspecialchars($absent_date) ?>" 
@@ -698,6 +1127,12 @@ function calculateDistance($lat1, $lon1, $lat2, $lon2) {
                     </form>
                 </div>
 
+                <div class="table-header-info">
+                    <div class="records-count">
+                        Showing <?= min($records_per_page, $absent_employees->num_rows) ?> of <?= $total_absent_records ?> absent employees
+                    </div>
+                </div>
+
                 <div class="attendance-table-wrapper">
                     <table class="table" id="absent-table">
                         <thead>
@@ -708,13 +1143,13 @@ function calculateDistance($lat1, $lon1, $lat2, $lon2) {
                                 <th>Department</th>
                                 <th>Contact</th>
                                 <th>Status</th>
+                                <th>Deduction</th>
                             </tr>
                         </thead>
                         <tbody>
                         <?php 
-                        // Reset pointer for absent employees result
-                        $absent_employees->data_seek(0);
                         while($employee = $absent_employees->fetch_assoc()): 
+                            $is_deduction_processed = $employee['deduction_processed'] == 1;
                         ?>
                             <tr>
                                 <td>
@@ -734,11 +1169,27 @@ function calculateDistance($lat1, $lon1, $lat2, $lon2) {
                                         <i class="fas fa-user-times"></i> ABSENT
                                     </span>
                                 </td>
+                                <td>
+                                    <?php if ($is_deduction_processed): ?>
+                                        <span class="badge badge-success">
+                                            <i class="fas fa-check-circle"></i> Deducted
+                                        </span>
+                                    <?php else: ?>
+                                        <form method="POST" action="" class="deduction-form" onsubmit="return confirm('Are you sure you want to deduct 1 annual leave day from <?= htmlspecialchars($employee['first_name'] . ' ' . $employee['last_name']) ?> for absence on <?= date('M j, Y', strtotime($absent_date)) ?>?')">
+                                            <input type="hidden" name="employee_id" value="<?= $employee['id'] ?>">
+                                            <input type="hidden" name="deduction_date" value="<?= $absent_date ?>">
+                                            <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?? '' ?>">
+                                            <button type="submit" name="deduct_leave" class="btn-deduct">
+                                                <i class="fas fa-minus-circle"></i> Deduct
+                                            </button>
+                                        </form>
+                                    <?php endif; ?>
+                                </td>
                             </tr>
                         <?php endwhile; ?>
                         <?php if ($absent_employees->num_rows === 0): ?>
                             <tr>
-                                <td colspan="6" class="text-center text-muted">
+                                <td colspan="7" class="text-center text-muted">
                                     <i class="fas fa-check-circle" style="color: var(--success-color);"></i>
                                     All active employees are accounted for on <?= date('F j, Y', strtotime($absent_date)) ?>!
                                     <br>
@@ -751,6 +1202,18 @@ function calculateDistance($lat1, $lon1, $lat2, $lon2) {
                         <?php endif; ?>
                         </tbody>
                     </table>
+                </div>
+                
+                <!-- Absent Employees Pagination -->
+                <?= generatePagination($absent_page, $total_absent_pages, 'absent_page') ?>
+                <?php if ($total_absent_pages > 0): ?>
+                <div class="pagination-info">
+                    Page <?= $absent_page ?> of <?= $total_absent_pages ?>
+                </div>
+                <?php endif; ?>
+
+                <div class="deduction-info">
+                    <small><i class="fas fa-info-circle"></i> Deduction will subtract 1 day from employee's annual leave balance. Once processed, deduction cannot be reversed.</small>
                 </div>
             </div>
         </div>
@@ -821,4 +1284,22 @@ function exportAbsentToCSV() {
 setTimeout(() => {
     location.reload();
 }, 30000);
+
+// Close flash messages
+document.addEventListener('DOMContentLoaded', function() {
+    const closeButtons = document.querySelectorAll('.close-flash');
+    closeButtons.forEach(button => {
+        button.addEventListener('click', function() {
+            this.parentElement.style.display = 'none';
+        });
+    });
+
+    // Auto-hide flash messages after 5 seconds
+    const flashMessages = document.querySelectorAll('.flash-message');
+    flashMessages.forEach(message => {
+        setTimeout(() => {
+            message.style.display = 'none';
+        }, 5000);
+    });
+});
 </script>
